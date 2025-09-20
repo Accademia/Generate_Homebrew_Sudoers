@@ -10,19 +10,26 @@
 使用方法：
 ===========================================
 
-# 步骤1:重装所有的homebrew Cask 软件
+# 总计3步：
+
+# 步骤 1 :
 python3 reinstall_casks.py
-# 此命令，会输出reinstall_casks_install.log的文件，此文件会记录安装（或重装）homebrew app时，所有带有sudo的命令
-# 此命令，还会生成reinstall_casks_state.json文件，此文件用于断点续做（如果下载过程或安装过程中断，会从中断位置开始继续运行）
+
+# 上述命令：重装所有的homebrew Cask 软件
+# 上述命令：会输出reinstall_casks_install.log的文件，此文件会记录安装（或重装）homebrew app时，所有带有sudo的命令
+# 上述命令：还会生成reinstall_casks_state.json文件，此文件用于断点续做（如果下载过程或安装过程中断，会从中断位置开始继续运行）
 
 
-# 生成 sudoers 免密配置
+# 步骤 2 :
 LOGS=./reinstall_casks_install.log TARGET_USER=你的用户名 python3 generate_homebrew_sudoers.py
-# 此命令，会通过识别reinstall_casks_install.log中的sudo命令和云端homebrew的安装配置文件，自动生成sudoers 免密配置
-# sudoers 免密配置文件：homebrew-cask.nopasswd.sudoers
-# 你的用户名：就是你当前登录MacOS的本地ID
+
+# 上述命令：生成 sudoers 免密配置
+# 上述命令：会通过识别reinstall_casks_install.log中的sudo命令和云端homebrew的安装配置文件，自动生成sudoers 免密配置
+# 上述命令：最终会生成 sudoers 免密配置文件：homebrew-cask.nopasswd.sudoers
+# 上述命令：你的用户名，就是你当前登录MacOS的本地ID
 
 
+# 步骤 3 :
 # 用户可以将 homebrew-cask.nopasswd.sudoers 文件中的免密配置 ，手动拷贝到 sudo visudo 当中。
 # 从而达到 升级、安装、重装这些app时都不会弹出密码提示
 
@@ -35,8 +42,12 @@ LOGS=./reinstall_casks_install.log TARGET_USER=你的用户名 python3 generate_
 更新某个软件的免密配置：
 ===========================================
 
-# 如：生成关于chatgpt app的免密规则
+# 如果生成关于特定app的免密规则 ，做增量更新 或 片段替换 呢？
+
+# 范例：生成chatgpt adguard tailscale-app  三个Homebrew Cask APP的sudoers免密配置
+
 CASKS="chatgpt adguard tailscale-app" python3 reinstall_casks.py
+
 LOGS=./reinstall_casks_install.log CASKS="chatgpt adguard tailscale-app" TARGET_USER=你的用户名 python3 generate_homebrew_sudoers.py
 
 

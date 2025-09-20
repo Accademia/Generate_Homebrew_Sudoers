@@ -257,10 +257,19 @@ def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: st
                 new_src = '/'.join(parts)
             except ValueError:
                 new_src = src
+        # Additionally, wildcard numeric suffixes in the app bundle name of the
+        # source path (e.g. 'Alfred 5.app' -> 'Alfred *.app').  This makes
+        # cp rules derived from logs version‑agnostic for the source as well.
+        if isinstance(new_src, str):
+            new_src = _wildcard_app_path(new_src)
         # Destination: do not alter case or introduce wildcards.  Leave
         # dest unchanged because sudoers must match the actual path,
         # including case (e.g. qBittorrent.app vs qbittorrent.app).
-        new_dest = dest
+        # Apply wildcarding to version numbers in the destination app bundle
+        # (e.g. 'AirParrot 3.app' -> 'AirParrot*.app'), while preserving
+        # case and other characters.  Use _wildcard_app_path to generalise
+        # numeric suffixes that follow spaces, hyphens or underscores.
+        new_dest = _wildcard_app_path(dest) if isinstance(dest, str) else dest
         # Build a new arguments list preserving flags and replacing src/dest
         new_args = list(args)
         new_args[-2] = new_src
@@ -291,27 +300,109 @@ def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: st
         new_args[-1] = _wildcard_delete_path(new_args[-1])
         return f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(cmd, new_args)
     # Normalise installer commands.  Handle both /usr/sbin/installer and
-    # /usr/bin/installer variants (basename == 'installer').
+    # /usr/bin/installer variants (basename == 'installer').  We collapse
+    # any target specification and verbose flags into a single wildcard
+    # argument after '-target', and wildcard version/hashes in any
+    # choice XML paths.  Simplify installer invocations into a single
+    # rule that collapses the target and verbose flags into one
+    # `-target*` token.  This avoids generating separate verbose and
+    # non‑verbose patterns and prevents the production of multiple
+    # adjacent wildcard arguments.
     if os.path.basename(cmd) == 'installer' and '-pkg' in args:
-        try:
-            pkg_index = args.index('-pkg') + 1
-            pkg_path = args[pkg_index]
-        except ValueError:
-            pkg_path = None
-        if pkg_path:
-            # wildcard version part in Caskroom path if present
-            if pkg_path.startswith(brew_prefix) and '/Caskroom/' in pkg_path:
-                parts = pkg_path.split('/')
+        """
+        Normalise installer invocations from the logs.
+
+        Homebrew invokes the macOS `installer` binary with a `-pkg`
+        argument followed by a mandatory `-target /` and, if run in
+        verbose mode, one or more `-verbose*` flags.  We collapse the
+        target and verbose options into a single wildcarded token
+        (`-target*`) so that a single sudoers entry will match both
+        verbose and non‑verbose forms.  The package path has its
+        version directory wildcarded and its filename digit/hashes
+        replaced via `_wildcard_pkg_name`.  Any `-applyChoiceChangesXML`
+        argument has its filename replaced with a generic
+        `choices*.xml` to avoid embedding dates or random strings.
+        """
+        pkg_path_w: Optional[str] = None
+        xml_path_w: Optional[str] = None
+        other_flags: List[str] = []
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == '-pkg' and i + 1 < len(args):
+                pkg_path = args[i + 1]
+                # Wildcard version directory in Caskroom path
+                if isinstance(pkg_path, str) and pkg_path.startswith(brew_prefix) and '/Caskroom/' in pkg_path:
+                    parts = pkg_path.split('/')
+                    try:
+                        idx = parts.index('Caskroom')
+                        if idx + 2 < len(parts):
+                            parts[idx + 2] = '*'
+                        pkg_path = '/'.join(parts)
+                    except ValueError:
+                        pass
+                # Separate directory and filename, wildcard filename version
+                pkg_dir, pkg_file = os.path.split(pkg_path)
+                pkg_file_w = _wildcard_pkg_name(pkg_file)
+                pkg_path_w = os.path.join(pkg_dir, pkg_file_w)
+                i += 2
+                continue
+            # Skip '-target' and its argument if present; also skip any
+            # subsequent '-verbose*' flags.
+            if a == '-target':
+                i += 1
+                if i < len(args) and not args[i].startswith('-'):
+                    i += 1
+                while i < len(args) and args[i].startswith('-verbose'):
+                    i += 1
+                continue
+            # Replace applyChoiceChangesXML file with choices*.xml
+            if a == '-applyChoiceChangesXML' and i + 1 < len(args):
+                xml_path = args[i + 1]
                 try:
-                    idx = parts.index('Caskroom')
-                    if idx + 2 < len(parts):
-                        parts[idx + 2] = '*'
-                    pkg_path = '/'.join(parts)
-                except ValueError:
-                    pass
-            # Wildcard trailing version numbers
-            args[pkg_index] = pkg_path
-        return f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(cmd, args, allow_trailing_star=False)
+                    xml_dir, xml_file = os.path.split(xml_path)
+                    if xml_file.startswith('choices'):
+                        xml_path_w = os.path.join(xml_dir, 'choices*.xml')
+                    else:
+                        xml_path_w = os.path.join(xml_dir, '*.xml')
+                except Exception:
+                    xml_path_w = '/private/tmp/choices*.xml'
+                i += 2
+                continue
+            # Skip any standalone verbose flags
+            if a.startswith('-verbose'):
+                i += 1
+                continue
+            # Preserve any other flags
+            other_flags.append(a)
+            i += 1
+        if not pkg_path_w:
+            return None
+        # Build argument list: -pkg <path> + other flags + '-target*'
+        args_list: List[str] = []
+        args_list.extend(['-pkg', pkg_path_w])
+        args_list.extend(other_flags)
+        args_list.append('-target*')
+        # Append applyChoiceChangesXML if present
+        if xml_path_w:
+            args_list.extend(['-applyChoiceChangesXML', xml_path_w])
+        # Build a second variant that explicitly specifies '-target /' and
+        # allows any trailing arguments via a final '*'.  This improves
+        # compatibility with installers that pass '-target /' without
+        # additional flags.  We do not duplicate xml flags on this
+        # variant because they were already included in args_list above.
+        args_list2: List[str] = []
+        args_list2.extend(['-pkg', pkg_path_w])
+        args_list2.extend(other_flags)
+        args_list2.extend(['-target', '/'])
+        if xml_path_w:
+            args_list2.extend(['-applyChoiceChangesXML', xml_path_w])
+        # Compose the two rule lines.  The first uses '-target*' and
+        # join_command without trailing star; the second uses explicit
+        # '-target /' with allow_trailing_star=True.
+        line1 = f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(cmd, args_list)
+        line2 = f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(cmd, args_list2, allow_trailing_star=True)
+        return line1 + '\n' + line2
     # Normalise arbitrary scripts under Caskroom with version directories
     if cmd.startswith(brew_prefix) and '/Caskroom/' in cmd:
         parts = cmd.split('/')
@@ -465,6 +556,11 @@ def _wildcard_delete_path(path: str) -> str:
         orig = seg
         # Handle team IDs
         seg = _wildcard_team_id(seg)
+        # If the segment is reduced to a single '*' (team ID), skip further
+        # transformations to avoid reintroducing partial wildcards.
+        if seg == '*':
+            parts.append(seg)
+            continue
         # Only wildcard segments that consist entirely of digits and common version separators
         # such as dots, commas, underscores or hyphens.  Do not wildcard segments that
         # merely start with a digit but also contain letters (e.g. '115Browser.app').  This
@@ -502,8 +598,35 @@ def _wildcard_delete_path(path: str) -> str:
                     seg = new_base + dot + ext
         # Replace v‑prefixed versions
         seg = re.sub(r'v\d+(?:[\d.]+)*', 'v*', seg)
-        # Collapse multiple stars
+        # Collapse multiple stars within the segment
         seg = re.sub(r'\*+', '*', seg)
+        # Collapse team identifier segments containing stars.  Two cases:
+        # (1) If the segment consists solely of uppercase letters/digits with
+        #     embedded stars and no other punctuation (e.g. '7SFX*GNR7'),
+        #     collapse the entire segment to '*'.  This prevents internal
+        #     star positions from leaking.
+        # (2) If the segment contains a star‑separated prefix followed by a
+        #     dot and suffix (e.g. '86Z*GCJ*MF.com.noodlesoft.HazelHelper.plist'),
+        #     examine only the prefix before the dot.  If removing stars
+        #     yields a string of ≥6 uppercase letters/digits, collapse
+        #     just that prefix to '*', preserving the dot and suffix
+        #     (yielding '*.com.noodlesoft.HazelHelper.plist').
+        if '*' in seg:
+            # Case 2: collapse star‑separated prefix before first dot
+            if '.' in seg:
+                pre, dot, suf = seg.partition('.')
+                clean_pre = pre.replace('*', '')
+                if len(clean_pre) >= 6 and re.fullmatch(r'[A-Z0-9]+', clean_pre) and re.fullmatch(r'[A-Z0-9\*]+', pre):
+                    seg = '*' + dot + suf
+                else:
+                    # Fall back to case 1 on entire segment
+                    clean = orig.replace('*', '')
+                    if len(clean) >= 6 and re.fullmatch(r'[A-Z0-9]+', clean) and re.fullmatch(r'[A-Z0-9\*]+', seg):
+                        seg = '*'
+            else:
+                clean = orig.replace('*', '')
+                if len(clean) >= 6 and re.fullmatch(r'[A-Z0-9]+', clean) and re.fullmatch(r'[A-Z0-9\*]+', seg):
+                    seg = '*'
         parts.append(seg)
     return '/'.join(parts)
 
@@ -539,10 +662,14 @@ def _wildcard_pkg_name(pkg: str) -> str:
     'mactex-basictex-20250308.pkg' -> 'mactex-basictex-*.pkg'.  Also
     collapses multiple '*-'.
     """
-    name = re.sub(r'([_-])\d[\d._,]*', r'\1*', pkg)
+    # Replace parenthesised numeric sequences, e.g. '(5558)', with '*'
+    name = re.sub(r'\(\d+\)', '*', pkg)
+    name = re.sub(r'([_-])\d[\d._,]*', r'\1*', name)
     # Collapse repeated -* or _*
-    name = re.sub(r'(?:-_\*)+', '-*', name)
+    name = re.sub(r'(?:-_*\*)+', '-*', name)
     name = re.sub(r'(?:__\*)+', '_*', name)
+    # Collapse consecutive stars into a single star
+    name = re.sub(r'\*+', '*', name)
     return name
 
 
@@ -559,8 +686,10 @@ def _wildcard_script_name(script: str) -> str:
     # Replace sequences of v + digits
     s = re.sub(r'v\d[\d.]*', 'v*', s)
     # Collapse repeated -* or _*
-    s = re.sub(r'(?:-_\*)+', '-*', s)
+    s = re.sub(r'(?:-_*\*)+', '-*', s)
     s = re.sub(r'(?:__\*)+', '_*', s)
+    # Collapse consecutive stars to a single star
+    s = re.sub(r'\*+', '*', s)
     return s
 
 
@@ -602,17 +731,85 @@ def _wildcard_versions_in_rule(rule: str) -> str:
     # subdirectory after <cask> is wildcarded.
     rule = re.sub(r'(/Caskroom/[^/]+/)[^/]+', r'\1*', rule)
     # Replace sequences of numbers separated by punctuation characters such
-    # as ., -, _, or , with a single '*'.  We require at least one
-    # separator to avoid matching simple integers.  Examples: 1.2.3,
-    # 6.0.4-1234, 2_5_0 -> *.
-    rule = re.sub(r'\b\d+[\.\-_,]\d+(?:[\.\-_,]\d+)*\b', '*', rule)
-    # Replace macOS SDK suffixes like 'macosx26' with 'macosx*'.
+    # as ., -, _, , or parentheses with a single '*'.  We require at
+    # least one separator to avoid matching simple integers.  Examples:
+    # 1.2.3, 6.0.4-1234, 2_5_0, 3_7_1(5558) -> *.
+    rule = re.sub(r'\b\d+[\.\-_,()]\d+(?:[\.\-_,()]\d+)*\b', '*', rule)
+    # Replace version numbers that appear after a dot without a preceding
+    # letter (e.g. '.2025', '.0.20.1').  This helps wildcard API
+    # identifiers or bundle names like 'LayOut.2025.LayOutThumbnailExtension'.
+    rule = re.sub(r'\.\d+(?:[\.\-_,]\d+)*', '.*', rule)
+    # Replace standalone eight‑digit sequences (often dates) with '*'
+    rule = re.sub(r'\b\d{8}\b', '*', rule)
+    # Replace four‑digit sequences when preceded by a letter, dot, underscore
+    # or hyphen.  This catches year‑like segments such as '.2025' or '_2024'.
+    rule = re.sub(r'(?<=[A-Za-z._-])\d{4}\b', '*', rule)
+    # Replace macOS SDK suffixes like 'macosx26' or 'macos10' with a wildcard.
     rule = re.sub(r'macosx\d+', 'macosx*', rule)
+    rule = re.sub(r'macos\d+', 'macos*', rule)
+    # Replace architecture targets like 'arm64' with 'arm*' to allow
+    # future CPU variations (e.g. arm65).  Only collapse the numeric
+    # portion after 'arm'.
+    rule = re.sub(r'arm\d+', 'arm*', rule)
     # Replace occurrences of 'v' followed by digits (e.g. v2, v10) with 'v*'.
     rule = re.sub(r'\bv\d+\b', 'v*', rule)
+    # Replace hyphen‑prefixed dotted version numbers like '-1.0' or '-3.4.5'
+    # with '-*'.  This captures minor or patch versions embedded in
+    # launchctl labels and other identifiers (e.g. 'com.adobe.AAM.Startup-1.0').
+    rule = re.sub(r'-(?:\d+\.)+\d+', '-*', rule)
+    # Replace single‑digit ordinals (e.g. '3rd', '1st', '2nd', '4th') with '*'.
+    rule = re.sub(r'\d+(?:st|nd|rd|th)', '*', rule)
+    # Replace digits preceded by a letter and followed by a dot or hyphen.  This
+    # handles cases like 'net9.Welly' -> 'net*.Welly' and 'foo3-bar' -> 'foo*-bar'.
+    rule = re.sub(r'(?<=[A-Za-z])\d+(?=[\.\-])', '*', rule)
+    # Replace digits preceded by a letter and followed by another letter.  This
+    # handles CamelCase or concatenated identifiers such as 'numi3helper' and
+    # 'BlueHarvestHelper8' by wildcarding the numeric component.  It will
+    # transform them to 'numi*helper' and 'BlueHarvestHelper*'.
+    rule = re.sub(r'([A-Za-z])\d+(?=[A-Za-z])', r'\1*', rule)
+    # Replace digits preceded by a letter at the end of a word (not followed
+    # by another alphanumeric character).  This covers patterns like
+    # 'BlueHarvestHelper8' -> 'BlueHarvestHelper*' and 'numi3' -> 'numi*'.
+    rule = re.sub(r'([A-Za-z])\d+(?=[^A-Za-z0-9]|$)', r'\1*', rule)
     # Replace long hexadecimal or alphanumeric tokens (8+ characters) that
     # resemble commit hashes or unique identifiers with '*'.
     rule = re.sub(r'\b[0-9a-fA-F]{8,}\b', '*', rule)
+    # Replace hyphen‑prefixed alphanumeric fragments of 5 or more characters
+    # that include at least one digit (e.g. '-5b3ous', '-cc24aef4') with
+    # '-*'.  This helps wildcard variable suffixes in filenames like
+    # 'choices20250918-92814-5b3ous.xml' without matching normal
+    # hyphenated words such as '-teams'.
+    rule = re.sub(r'-(?=[0-9A-Za-z]*\d)[0-9A-Za-z]{5,}', '-*', rule)
+    # Collapse repeated '-*' patterns into a single '-*'
+    rule = re.sub(r'(?:-\*){2,}', '-*', rule)
+    # Collapse consecutive stars into a single star
+    rule = re.sub(r'\*+', '*', rule)
+    # Replace numeric sequences separated by dots or underscores that are
+    # embedded within alphanumeric tokens.  For example, convert
+    # 'iMazing3.4.0.23220Mac' -> 'iMazing*Mac' and
+    # 'OpenVPN_Connect_3_7_1' -> 'OpenVPN_Connect_*'.  We look for a
+    # digit sequence followed by one or more occurrences of a separator
+    # (dot or underscore) plus additional digits, and require that it be
+    # immediately preceded by a letter.  This avoids matching IP
+    # addresses or plain numeric segments already handled above.
+    rule = re.sub(r'(?<=[A-Za-z])\d+(?:[._]\d+)+', '*', rule)
+    # Replace parenthesised numeric or version sequences like '(5558)' or
+    # '(1.2.3)' with a single '*'.  This helps generalise installer
+    # package names that embed build numbers.
+    rule = re.sub(r'\(\d+(?:[\d._]*?)\)', '*', rule)
+    # Collapse ARMDCHelper cc suffixes: if a label contains '.cc' followed
+    # by a long sequence of hex digits (optionally interspersed with
+    # previously inserted stars), replace the entire suffix after '.cc'
+    # with a single '*'.  This handles log entries where the hash has
+    # already been partially wildcarded (e.g. 'cc*aef*a*b*ed...').
+    rule = re.sub(r'(\.cc)(?:[0-9A-Fa-f\*]{8,})', r'\1*', rule)
+    # Collapse multiple '-*' or '_*' patterns that may have been
+    # introduced by the substitutions above.  Ensure we don't end up with
+    # '-*-*' or similar.
+    rule = re.sub(r'(?:-\*){2,}', '-*', rule)
+    rule = re.sub(r'(?:_\*){2,}', '_*', rule)
+    # Collapse remaining consecutive stars once more
+    rule = re.sub(r'\*+', '*', rule)
     return rule
 
 
@@ -815,6 +1012,13 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
         # Source glob and destination path
         src_glob = os.path.join(brew_prefix, 'Caskroom', token, '*', src_rel)
         src_glob_w = _wildcard_cask_path(src_glob, token)
+        # Further generalise the source app path itself (e.g. 'Alfred 5.app'
+        # -> 'Alfred *.app') by wildcarding numeric suffixes in the final
+        # bundle name.  This uses `_wildcard_app_path` which handles
+        # version numbers after spaces, hyphens or underscores.  Without
+        # this additional step, cp rules for apps like Alfred 5 will
+        # remain version‑specific in the source path.
+        src_glob_w = _wildcard_app_path(src_glob_w)
         if tgt_rel:
             dest_path = os.path.join('/Applications', tgt_rel)
         else:
@@ -852,7 +1056,12 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
     # pkg installers
     for pkg in pkgs:
         pkg_w = _wildcard_cask_path(os.path.join(brew_prefix, 'Caskroom', token, '*', _wildcard_pkg_name(pkg)), token)
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/usr/sbin/installer', ['-pkg', pkg_w, '-target', '/'], allow_trailing_star=True))
+        # Permit installer invocation with a wildcard target to accommodate
+        # variations like '-target / -verboseR' or other flags.  We use
+        # '*'' after '-target' rather than a literal '/' to allow optional
+        # arguments following the target.  Do not append a trailing '*' to
+        # avoid producing overly broad rules.
+        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/usr/sbin/installer', ['-pkg', pkg_w, '-target', '*']))
 
     # installer scripts
     for sc in installer_scripts:
@@ -1120,12 +1329,21 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
         pass
 
     # Deduplicate lines
-    unique_lines = []
+    unique_lines: List[str] = []
     seen = set()
     for ln in lines:
         if ln not in seen:
             seen.add(ln)
             unique_lines.append(ln)
+    # Apply version wildcarding to all generated lines.  The log parser
+    # already calls `_wildcard_versions_in_rule`, but rules originating
+    # from cask metadata (artifacts, uninstall directives, etc.) need
+    # version generalisation as well.  This ensures that year‑like
+    # segments (e.g. '.2025.'), minor/patch versions ('-1.0') and
+    # hashed suffixes are replaced with '*' consistently across the
+    # entire sudoers file.
+    for i, ln in enumerate(unique_lines):
+        unique_lines[i] = _wildcard_versions_in_rule(ln)
     return unique_lines
 
 

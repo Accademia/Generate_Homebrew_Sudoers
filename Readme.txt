@@ -26,7 +26,7 @@ LOGS=./reinstall_casks_install.log TARGET_USER=你的用户名 python3 generate_
 # 上述命令：生成 sudoers 免密配置
 # 上述命令：会通过识别reinstall_casks_install.log中的sudo命令和云端homebrew的安装配置文件，自动生成sudoers 免密配置
 # 上述命令：最终会生成 sudoers 免密配置文件：homebrew-cask.nopasswd.sudoers
-# 上述命令：你的用户名，就是你当前登录MacOS的本地ID
+# 上述命令：⚠️⚠️⚠️你的用户名⚠️⚠️⚠️，就是你当前登录MacOS的本地ID
 
 
 # 步骤 3 :
@@ -49,6 +49,8 @@ LOGS=./reinstall_casks_install.log TARGET_USER=你的用户名 python3 generate_
 CASKS="chatgpt adguard tailscale-app" python3 reinstall_casks.py
 
 LOGS=./reinstall_casks_install.log CASKS="chatgpt adguard tailscale-app" TARGET_USER=你的用户名 python3 generate_homebrew_sudoers.py
+
+# 上述命令：⚠️⚠️⚠️你的用户名⚠️⚠️⚠️，就是你当前登录MacOS的本地ID
 
 
 

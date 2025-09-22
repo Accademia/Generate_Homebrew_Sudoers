@@ -54,6 +54,7 @@ LOGS=./reinstall_casks_install.log CASKS="chatgpt adguard tailscale-app" TARGET_
 
 
 
+
 ===========================================
 其他：
 ===========================================
@@ -66,6 +67,76 @@ LOGS=./reinstall_casks_install.log CASKS="chatgpt adguard tailscale-app" TARGET_
 强烈不推荐手动编撰配置，经过测试发现，400个常用软件的配置规模达到了1.4万行。平均每个软件300行配置。
 
 本项目可以配合 GitHub项目：UpdateFull_For_MacOS （MacOS软件的自动更新）
+
+
+
+===========================================
+安全提示 ：
+===========================================
+
+有大量的软件，在重装过程中，使用了如下命令
+
+/usr/bin/xargs -0 -- /bin/rm --
+/usr/bin/xargs -0 -- /bin/rm -r -f --
+
+实际上，对上述命令免密，非常不安全。相当于通过xargs提交的所有 rm 操作，不需要强制root密码了，包括删除任何目录。
+
+但如果注释掉，会影响如下Cask程序的的更新和重装，会弹出密码请求（仅列出常用Cask）：
+
+adguard
+adobe-acrobat-pro
+adobe-creative-cloud
+aldente
+anaconda
+background-music
+backuploupe
+basictex
+blueharvest
+citra
+cloudflare-warp
+data-rescue
+elgato-stream-deck
+eqmac
+forklift
+fsmonitor
+fxfactory
+gog-galaxy
+google-drive
+google-earth-pro
+gpg-suite
+karabiner-elements
+linkliar
+loopback
+macfuse
+microsoft-auto-update
+microsoft-teams
+mipony
+mist
+mono-mdk-for-visual-studio
+nextcloud
+nperf
+obs
+openvpn-connect
+paragon-ntfs
+parsec
+powershell
+sensei
+steam
+synology-drive
+tailscale-app
+textsniper
+trim-enabler
+tripmode
+tunnelblick
+uninstallpkg
+veracrypt
+whatroute
+windows-app
+wireshark-app
+xquartz
+zoom
+
+目前没有更好的解决方案，visudo不允许通过识别进程来进行root免密仿行。
 
 
 

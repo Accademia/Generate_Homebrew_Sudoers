@@ -1,9 +1,18 @@
 
 功能与目的：
 -----------------------
+
 本项目有两个核心功能：
  - 自动生成本地homebrew app重装（或更新）时，所需的sudoers（sudo visudo）免密配置
  - 自动重装本地所有的homebrew app
+
+.
+
+
+最终效果：
+-----------------------
+
+<img width="958" height="1216" alt="longshot20250927114144" src="https://github.com/user-attachments/assets/f680d9d0-7b9a-4a96-b682-261dc5c9f05c" />
 
 
 .

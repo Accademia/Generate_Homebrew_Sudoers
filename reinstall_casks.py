@@ -191,18 +191,61 @@ def reinstall_cask(cask: str, log_file) -> None:
 
 
 def main() -> None:
-    """Main function to download and reinstall all installed casks.
+    """Main function to download and reinstall Homebrew Cask packages.
 
-    The workflow consists of two phases:
+    This function supports two modes of operation:
 
-    1. Downloading all application bundles using `brew fetch --cask`.
-    2. Reinstalling each package with `brew reinstall --cask --verbose --debug`.
+    1. **Reinstall all installed casks** (default):
+       When no cask names are specified via command‑line arguments or
+       the ``CASKS`` environment variable, the script queries ``brew`` to
+       determine the full list of currently installed cask packages and
+       proceeds to download and reinstall them.
+
+    2. **Reinstall specific casks**: If one or more cask names are
+       provided either as positional command‑line arguments or via the
+       ``CASKS`` environment variable, only those casks will be
+       processed.  This is useful for targeting a subset of installed
+       applications without affecting the rest.  When running in this
+       mode, the script still maintains its progress state, but only
+       operates on the selected casks.  Progress messages (e.g.,
+       "Downloading casks" and "Install phase") will accurately reflect
+       the number of targeted casks rather than the total number of
+       installed casks.
+
+    Regardless of mode, the workflow consists of two phases:
+
+    1. Downloading application bundles using ``brew fetch --cask``.
+    2. Reinstalling each package with ``brew reinstall --cask --verbose --debug``.
 
     Progress for each phase is persisted in a JSON state file so that
     interrupted runs can be resumed.  If the state file exists,
     previously downloaded or installed casks are skipped.
     """
-    casks = get_installed_casks()
+
+    import os
+
+    # Determine which casks to process.  Priority order:
+    #   1. Positional command‑line arguments (excluding the script name).
+    #   2. Environment variable CASKS, which may contain a whitespace‑
+    #      separated list of cask names.
+    #   3. Fallback to all currently installed casks returned by brew.
+    specified: List[str] = []
+    # Exclude the script name; sys.argv[0] is the script path.
+    if len(sys.argv) > 1:
+        # Treat all remaining arguments as cask names.  No option parsing
+        # is performed; this keeps the interface simple.
+        specified = sys.argv[1:]
+    elif os.environ.get("CASKS"):
+        # Split on whitespace to support multiple names separated by spaces
+        specified = os.environ["CASKS"].split()
+
+    if specified:
+        # Use only the specified casks.  Do not query brew for the full list.
+        casks: List[str] = specified
+    else:
+        # No casks specified; fallback to querying installed casks.
+        casks = get_installed_casks()
+
     if not casks:
         print("No Homebrew Cask packages found to process.")
         return
@@ -211,6 +254,7 @@ def main() -> None:
     downloaded, installed = load_state()
 
     # Phase 1: download any casks that haven't been fetched yet
+    # Only consider casks selected for this run when calculating counts.
     to_download = [c for c in casks if c not in downloaded]
     if to_download:
         print(
@@ -226,7 +270,7 @@ def main() -> None:
             }
             if tqdm:
                 # If tqdm is available, use it to display a detailed progress bar
-                with tqdm(total=len(to_download), desc="Downloading casks (0/{0})".format(len(to_download))) as pbar:
+                with tqdm(total=len(to_download), desc=f"Downloading casks (0/{len(to_download)})") as pbar:
                     for future in as_completed(future_to_cask):
                         cask_name, success = future.result()
                         pbar.update(1)
@@ -243,6 +287,7 @@ def main() -> None:
                 # Fallback: simple console progress without tqdm
                 total_tasks = len(to_download)
                 completed_tasks = 0
+                # Print initial progress
                 print(f"Downloading casks: {completed_tasks}/{total_tasks}", end="", flush=True)
                 for future in as_completed(future_to_cask):
                     cask_name, success = future.result()
@@ -260,6 +305,7 @@ def main() -> None:
                 print()
                 print("Download phase completed.")
     else:
+        # No casks to download
         print("All casks have already been downloaded; skipping download phase.")
 
     # Phase 2: reinstall any casks that haven't been installed yet

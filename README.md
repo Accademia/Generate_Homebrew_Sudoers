@@ -45,6 +45,7 @@ LOGS=./reinstall_casks_install.log TARGET_USER=你的用户名 python3 generate_
 步骤 3 :
 - 用户可以将 homebrew-cask.nopasswd.sudoers 文件中的免密配置 ，手动拷贝到 sudo visudo 当中。
 - 从而达到 升级、安装、重装这些app时都不会弹出密码提示
+- 请在拷贝前，一定要确认，⚠️⚠️⚠️你的用户名⚠️⚠️⚠️，是否正确 ❕❕❕❕
 
 
 在visudo中，批量删除，可以使用vim命令，如（删除第300行后的所有内容）：

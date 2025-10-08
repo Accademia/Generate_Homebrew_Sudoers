@@ -29,7 +29,7 @@ python3 reinstall_casks.py
 ```
 - 上述命令：重装所有的homebrew Cask 软件
 - 上述命令：会输出reinstall_casks_install.log的文件，此文件会记录安装（或重装）homebrew app时，所有带有sudo的命令
-- 上述命令：还会生成reinstall_casks_state.json文件，此文件用于断点续做（如果下载过程或安装过程中断，会从中断位置开始继续运行）
+- 上述命令：还会生成reinstall_casks_state.json文件，此文件用于断点续做（如果下载过程或安装过程中断，会从中断位置开始继续运行）⚠️ 如果不想断点续做，则删除reinstall_casks_state.json即可 ⚠️
 
 
 步骤 2 :

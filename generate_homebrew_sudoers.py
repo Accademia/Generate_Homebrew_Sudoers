@@ -54,6 +54,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # ----------------------------------------------------------------------
 # Utility functions
 
+
 def run(cmd: Iterable[str]) -> str:
     """Execute a command and return its stripped stdout.  Raises on error."""
     return subprocess.check_output(list(cmd), text=True).strip()
@@ -100,6 +101,7 @@ def parse_artifacts(cj: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     raw = cj.get("artifacts")
     flattened: List[Dict[str, Any]] = []
+
     def walk(node: Any) -> None:
         if isinstance(node, dict):
             if node:
@@ -116,6 +118,7 @@ def parse_artifacts(cj: Dict[str, Any]) -> List[Dict[str, Any]]:
                 walk(item)
             return
         # Ignore scalars
+
     walk(raw)
     return flattened
 
@@ -146,6 +149,7 @@ def join_command(cmd: str, args: List[str], allow_trailing_star: bool = False) -
 ###############################################################################
 # Log parsing helpers
 
+
 def _find_log_command_tokens(tokens: List[str]) -> Optional[Tuple[str, List[str]]]:
     """Given a shlex‑split line, find the real command path and args after sudo.
 
@@ -153,23 +157,23 @@ def _find_log_command_tokens(tokens: List[str]) -> Optional[Tuple[str, List[str]
     Returns (cmd, args) or None if not found.
     """
     try:
-        idx = tokens.index('/usr/bin/sudo') + 1
+        idx = tokens.index("/usr/bin/sudo") + 1
     except ValueError:
         return None
     # Skip sudo flags like -u root -E and PATH= assignments
     while idx < len(tokens):
         tok = tokens[idx]
         # environment assignment (contains '=' but not starting with '/')
-        if '=' in tok and not tok.startswith('/'):
+        if "=" in tok and not tok.startswith("/"):
             idx += 1
             continue
         # skip sudo options (e.g. -E, -n, -u, --)
-        if tok in ('--'):
+        if tok in ("--"):
             idx += 1
             continue
-        if tok.startswith('-'):
+        if tok.startswith("-"):
             # if -u, skip next token (username)
-            if tok == '-u' and idx + 1 < len(tokens):
+            if tok == "-u" and idx + 1 < len(tokens):
                 idx += 2
                 continue
             idx += 1
@@ -178,16 +182,19 @@ def _find_log_command_tokens(tokens: List[str]) -> Optional[Tuple[str, List[str]
     if idx >= len(tokens):
         return None
     cmd = tokens[idx]
-    args = tokens[idx + 1:]
+    args = tokens[idx + 1 :]
     return (cmd, args)
 
 
-def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: str) -> Optional[str]:
+def _normalize_log_command(
+    cmd: str, args: List[str], user: str, brew_prefix: str
+) -> Optional[str]:
     """Return a sudoers rule for a log‑derived command.
 
-    Applies minimal wildcarding: chown user part to '*:staff'; wildcard
-    version directories in Caskroom paths; unify .app paths; wildcard
-    deletion targets; handle common installer/cp/touch patterns.
+    Applies minimal wildcarding: leaves chown owner:group unchanged (no
+    wildcard '*:staff' on the user); wildcard version directories in
+    Caskroom paths; unify .app paths; wildcard deletion targets;
+    handle common installer/cp/touch patterns.
 
     Before performing any normalisation, resolve bare command names to
     absolute paths.  The reinstall logs sometimes record commands like
@@ -200,14 +207,14 @@ def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: st
     # Ensure bare command names are resolved to absolute paths.  If cmd
     # contains no slash, try to locate it using shutil.which.  On
     # failure, fallback to scanning a list of common directories.
-    if cmd and not cmd.startswith('/'):
+    if cmd and not cmd.startswith("/"):
         # Use shutil.which to honour PATH; may return None.
         abs_cmd = shutil.which(cmd)
         if abs_cmd:
             cmd = abs_cmd
         else:
             # Fallback search in typical system directories.
-            for search_dir in ('/usr/bin', '/bin', '/usr/sbin', '/sbin'):
+            for search_dir in ("/usr/bin", "/bin", "/usr/sbin", "/sbin"):
                 candidate = os.path.join(search_dir, cmd)
                 if os.path.exists(candidate) and os.access(candidate, os.X_OK):
                     cmd = candidate
@@ -217,44 +224,38 @@ def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: st
                 return None
     # Skip obvious noise or empty commands.  Some log lines contain messages
     # enclosed in backticks or have no real command; ignore those.
-    if not cmd or '`' in cmd:
+    if not cmd or "`" in cmd:
         return None
-    # Normalise chown: replace user:group with '*:staff'.  Handle both
-    # /usr/sbin/chown and /bin/chown variants (or any absolute chown path).
-    if os.path.basename(cmd) == 'chown' and args:
-        # Expect pattern: -R, '--', user:group, path...
-        # We want to change the first non‑flag argument that contains ':'
-        new_args = []
-        replaced = False
-        for a in args:
-            if not replaced and ':' in a and not a.startswith('-'):
-                parts = a.split(':')
-                if len(parts) == 2 and parts[1] == 'staff':
-                    new_args.append('*:staff')
-                    replaced = True
-                    continue
-            new_args.append(a)
-        args = new_args
+    # ------------------------------------------------------------------
+    # Do not normalise chown user:group to '*:staff'.  Retain the
+    # original owner and group as logged.  This prevents generating
+    # wildcard chown rules (e.g. '*:staff') that could authorise
+    # unintended ownership changes.  The subsequent normalisation
+    # stages (cp, touch, rmdir, rm, installer, etc.) do not apply to
+    # chown and will fall through to the generic path wildcard logic.
+    if os.path.basename(cmd) == "chown" and args:
+        # No modification of args; leave owner:group unchanged
+        pass
     # Normalise cp: unify Caskroom version directory for the source and
     # preserve flags and the destination.  The cp command in logs
     # typically has the form ``cp [options] <source> <dest>``.  We
     # identify the source as the penultimate argument and the
     # destination as the last argument, leaving any flags untouched.
-    if os.path.basename(cmd) == 'cp' and len(args) >= 2:
+    if os.path.basename(cmd) == "cp" and len(args) >= 2:
         # Determine source and destination as the last two arguments
         src = args[-2]
         dest = args[-1]
         new_src = src
         # If the source is under the Caskroom, wildcard the version
         # directory.  Example: /opt/homebrew/Caskroom/ares-emulator/146/ares-v146/ares.app
-        if isinstance(src, str) and src.startswith(brew_prefix) and '/Caskroom/' in src:
-            parts = src.split('/')
+        if isinstance(src, str) and src.startswith(brew_prefix) and "/Caskroom/" in src:
+            parts = src.split("/")
             try:
-                idx = parts.index('Caskroom')
+                idx = parts.index("Caskroom")
                 # Replace the version directory with '*'
                 if idx + 2 < len(parts):
-                    parts[idx + 2] = '*'
-                new_src = '/'.join(parts)
+                    parts[idx + 2] = "*"
+                new_src = "/".join(parts)
             except ValueError:
                 new_src = src
         # Additionally, wildcard numeric suffixes in the app bundle name of the
@@ -275,18 +276,44 @@ def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: st
         new_args[-2] = new_src
         new_args[-1] = new_dest
         return f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(cmd, new_args)
-    # Normalise touch of .homebrew-write-test: allow a generic rule.  If the
-    # command basename is 'touch', always generate the generic rule.
-    if os.path.basename(cmd) == 'touch':
-        # Accept any .homebrew-write-test touch
-        return f"{user} ALL=(ALL) NOPASSWD: SETENV: /usr/bin/touch /Applications/*.app/.homebrew-write-test"
+    # Normalise touch of .homebrew-write-test.  Historically a blanket rule
+    # authorising `touch /Applications/*.app/.homebrew-write-test` was emitted,
+    # but this is overly permissive and could allow touching arbitrary files
+    # inside any application bundle.  Instead, derive the rule from the
+    # logged argument, wildcarding only the versioned portion of the app
+    # bundle name.  We retain the generic rule in an unused variable for
+    # reference but do not emit it.
+    if os.path.basename(cmd) == "touch":
+        # Preserve the unused generic rule for backward compatibility and
+        # debugging.  This variable is not used when constructing the
+        # returned rule, but keeping it avoids removing code.
+        _unused_generic_touch_rule = (
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: /usr/bin/touch /Applications/*.app/.homebrew-write-test"
+        )
+        # If there are no arguments, skip generating a rule as it would be
+        # ambiguous which application is targeted.  Without args, return None.
+        if not args:
+            return None
+        # Build a new argument list, wildcarding version numbers in any
+        # .homebrew-write-test path.  The reinstall log records commands
+        # like `/usr/bin/sudo touch /Applications/AppName 5.app/.homebrew-write-test`,
+        # so we use `_wildcard_app_path` to generalise `AppName 5.app` to
+        # `AppName *.app` while preserving the rest of the path.
+        new_args = []
+        for a in args:
+            if isinstance(a, str) and a.endswith(".homebrew-write-test"):
+                # Wildcard the app bundle segment inside the path
+                new_args.append(_wildcard_app_path(a))
+            else:
+                new_args.append(a)
+        return f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(cmd, new_args)
     # Normalise rmdir and rm paths.  Handle any absolute rmdir path.
-    if os.path.basename(cmd) == 'rmdir' and args:
+    if os.path.basename(cmd) == "rmdir" and args:
         path = args[-1]
         # unify path using wildcard delete
         new_path = _wildcard_delete_path(path)
         return f"{user} ALL=(ALL) NOPASSWD: SETENV: /bin/rmdir -- {new_path}"
-    if os.path.basename(cmd) == 'rm' and args:
+    if os.path.basename(cmd) == "rm" and args:
         # For rm commands, preserve any existing option flags (e.g. -f, -r)
         # and only wildcard the final path argument.  We do not insert
         # additional flags here because the sudoers entry must match the
@@ -308,7 +335,7 @@ def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: st
     # `-target*` token.  This avoids generating separate verbose and
     # non‑verbose patterns and prevents the production of multiple
     # adjacent wildcard arguments.
-    if os.path.basename(cmd) == 'installer' and '-pkg' in args:
+    if os.path.basename(cmd) == "installer" and "-pkg" in args:
         """
         Normalise installer invocations from the logs.
 
@@ -329,16 +356,20 @@ def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: st
         i = 0
         while i < len(args):
             a = args[i]
-            if a == '-pkg' and i + 1 < len(args):
+            if a == "-pkg" and i + 1 < len(args):
                 pkg_path = args[i + 1]
                 # Wildcard version directory in Caskroom path
-                if isinstance(pkg_path, str) and pkg_path.startswith(brew_prefix) and '/Caskroom/' in pkg_path:
-                    parts = pkg_path.split('/')
+                if (
+                    isinstance(pkg_path, str)
+                    and pkg_path.startswith(brew_prefix)
+                    and "/Caskroom/" in pkg_path
+                ):
+                    parts = pkg_path.split("/")
                     try:
-                        idx = parts.index('Caskroom')
+                        idx = parts.index("Caskroom")
                         if idx + 2 < len(parts):
-                            parts[idx + 2] = '*'
-                        pkg_path = '/'.join(parts)
+                            parts[idx + 2] = "*"
+                        pkg_path = "/".join(parts)
                     except ValueError:
                         pass
                 # Separate directory and filename, wildcard filename version
@@ -349,28 +380,28 @@ def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: st
                 continue
             # Skip '-target' and its argument if present; also skip any
             # subsequent '-verbose*' flags.
-            if a == '-target':
+            if a == "-target":
                 i += 1
-                if i < len(args) and not args[i].startswith('-'):
+                if i < len(args) and not args[i].startswith("-"):
                     i += 1
-                while i < len(args) and args[i].startswith('-verbose'):
+                while i < len(args) and args[i].startswith("-verbose"):
                     i += 1
                 continue
             # Replace applyChoiceChangesXML file with choices*.xml
-            if a == '-applyChoiceChangesXML' and i + 1 < len(args):
+            if a == "-applyChoiceChangesXML" and i + 1 < len(args):
                 xml_path = args[i + 1]
                 try:
                     xml_dir, xml_file = os.path.split(xml_path)
-                    if xml_file.startswith('choices'):
-                        xml_path_w = os.path.join(xml_dir, 'choices*.xml')
+                    if xml_file.startswith("choices"):
+                        xml_path_w = os.path.join(xml_dir, "choices*.xml")
                     else:
-                        xml_path_w = os.path.join(xml_dir, '*.xml')
+                        xml_path_w = os.path.join(xml_dir, "*.xml")
                 except Exception:
-                    xml_path_w = '/private/tmp/choices*.xml'
+                    xml_path_w = "/private/tmp/choices*.xml"
                 i += 2
                 continue
             # Skip any standalone verbose flags
-            if a.startswith('-verbose'):
+            if a.startswith("-verbose"):
                 i += 1
                 continue
             # Preserve any other flags
@@ -380,63 +411,73 @@ def _normalize_log_command(cmd: str, args: List[str], user: str, brew_prefix: st
             return None
         # Build argument list: -pkg <path> + other flags + '-target*'
         args_list: List[str] = []
-        args_list.extend(['-pkg', pkg_path_w])
+        args_list.extend(["-pkg", pkg_path_w])
         args_list.extend(other_flags)
-        args_list.append('-target*')
+        args_list.append("-target*")
         # Append applyChoiceChangesXML if present
         if xml_path_w:
-            args_list.extend(['-applyChoiceChangesXML', xml_path_w])
+            args_list.extend(["-applyChoiceChangesXML", xml_path_w])
         # Build a second variant that explicitly specifies '-target /' and
         # allows any trailing arguments via a final '*'.  This improves
         # compatibility with installers that pass '-target /' without
         # additional flags.  We do not duplicate xml flags on this
         # variant because they were already included in args_list above.
         args_list2: List[str] = []
-        args_list2.extend(['-pkg', pkg_path_w])
+        args_list2.extend(["-pkg", pkg_path_w])
         args_list2.extend(other_flags)
-        args_list2.extend(['-target', '/'])
+        args_list2.extend(["-target", "/"])
         if xml_path_w:
-            args_list2.extend(['-applyChoiceChangesXML', xml_path_w])
+            args_list2.extend(["-applyChoiceChangesXML", xml_path_w])
         # Compose the two rule lines.  The first uses '-target*' and
         # join_command without trailing star; the second uses explicit
         # '-target /' with allow_trailing_star=True.
         line1 = f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(cmd, args_list)
-        line2 = f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(cmd, args_list2, allow_trailing_star=True)
-        return line1 + '\n' + line2
+        line2 = f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(
+            cmd, args_list2, allow_trailing_star=True
+        )
+        return line1 + "\n" + line2
     # Normalise arbitrary scripts under Caskroom with version directories
-    if cmd.startswith(brew_prefix) and '/Caskroom/' in cmd:
-        parts = cmd.split('/')
+    if cmd.startswith(brew_prefix) and "/Caskroom/" in cmd:
+        parts = cmd.split("/")
         try:
-            idx = parts.index('Caskroom')
+            idx = parts.index("Caskroom")
             if idx + 2 < len(parts):
-                parts[idx + 2] = '*'
-            cmd = '/'.join(parts)
+                parts[idx + 2] = "*"
+            cmd = "/".join(parts)
         except ValueError:
             pass
-        return f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(cmd, args, allow_trailing_star=False)
+        return f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(
+            cmd, args, allow_trailing_star=False
+        )
     # Normalise launchctl list/remove from logs.  Handle both /bin/launchctl
     # and /usr/bin/launchctl variants (basename == 'launchctl').
-    if os.path.basename(cmd) == 'launchctl' and args:
+    if os.path.basename(cmd) == "launchctl" and args:
         action = args[0]
-        label = args[1] if len(args) > 1 else ''
+        label = args[1] if len(args) > 1 else ""
         # Use wildcard helpers to unify label
         wildcarded = []
-        if '.helper' in label:
-            base = label.rsplit('.', 1)[0]
-            wildcarded.append(base + '.*')
+        if ".helper" in label:
+            base = label.rsplit(".", 1)[0]
+            wildcarded.append(base + ".*")
         wildcarded.append(label)
         lines = []
         for lbl in wildcarded:
-            lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: /bin/launchctl {action} {lbl}")
+            lines.append(
+                f"{user} ALL=(ALL) NOPASSWD: SETENV: /bin/launchctl {action} {lbl}"
+            )
             # Remove plist for list action
-            lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: /bin/rm -f -- /Library/LaunchDaemons/{lbl}.plist")
-            lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: /bin/rm -f -- /Library/LaunchAgents/{lbl}.plist")
-        return '\n'.join(lines)
+            lines.append(
+                f"{user} ALL=(ALL) NOPASSWD: SETENV: /bin/rm -f -- /Library/LaunchDaemons/{lbl}.plist"
+            )
+            lines.append(
+                f"{user} ALL=(ALL) NOPASSWD: SETENV: /bin/rm -f -- /Library/LaunchAgents/{lbl}.plist"
+            )
+        return "\n".join(lines)
     # Fallback: wildcard deletion path for other commands
     # unify arguments if they look like paths
     norm_args = []
     for a in args:
-        if a.startswith('/'):
+        if a.startswith("/"):
             norm_args.append(_wildcard_delete_path(a))
         else:
             norm_args.append(a)
@@ -454,21 +495,31 @@ def process_log_file(log_path: str, user: str, brew_prefix: str) -> List[str]:
     rules = []
     seen = set()
     try:
-        with open(log_path, 'r', encoding='utf-8', errors='ignore') as fh:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
             for raw in fh:
-                if '/usr/bin/sudo' not in raw:
+                if "/usr/bin/sudo" not in raw:
                     continue
                 # Skip descriptive messages
-                if 'with `sudo`' in raw or 'Uninstalling packages' in raw or 'Changing ownership' in raw:
+                if (
+                    "with `sudo`" in raw
+                    or "Uninstalling packages" in raw
+                    or "Changing ownership" in raw
+                ):
                     continue
-                if 'Running installer' in raw:
+                if "Running installer" in raw:
                     continue
                 # Skip Ruby object dumps and other Ruby inspector outputs
-                if '#<Cask' in raw or 'Cask::' in raw or '@dsl_args' in raw or '@directives' in raw or '@cask=' in raw:
+                if (
+                    "#<Cask" in raw
+                    or "Cask::" in raw
+                    or "@dsl_args" in raw
+                    or "@directives" in raw
+                    or "@cask=" in raw
+                ):
                     continue
                 # Skip sudo error/warning lines (e.g. "sudo: 3 incorrect password attempts")
                 stripped = raw.strip()
-                if stripped.startswith('sudo:'):
+                if stripped.startswith("sudo:"):
                     continue
                 # Tokenise
                 try:
@@ -483,7 +534,7 @@ def process_log_file(log_path: str, user: str, brew_prefix: str) -> List[str]:
                 rule = _normalize_log_command(cmd, args, user, brew_prefix)
                 if not rule:
                     continue
-                for r in rule.split('\n'):
+                for r in rule.split("\n"):
                     # Apply version wildcarding on the entire rule.  Without this
                     # post‑processing, rules derived from log lines may embed
                     # explicit version numbers (e.g. "5.30", "v2", "arm64-apple-macosx26")
@@ -499,6 +550,93 @@ def process_log_file(log_path: str, user: str, brew_prefix: str) -> List[str]:
         # If log file missing or unreadable, return empty
         return []
     return rules
+
+
+def process_log_file_by_cask(
+    log_path: str, user: str, brew_prefix: str
+) -> Dict[Optional[str], List[str]]:
+    """Return a mapping of cask token to sudoers rules parsed from a brew install log.
+
+    This helper groups log‑derived rules by the cask they belong to.  The
+    reinstall logs include lines like ``Running command: brew reinstall --cask … <token>``
+    which mark the start of each cask's processing.  Subsequent sudo commands
+    are attributed to that cask until the next marker.  Commands that occur
+    before any such marker or cannot be associated with a cask are returned
+    under the ``None`` key.
+
+    Parameters
+    ----------
+    log_path : str
+        Path to a Homebrew reinstall log produced by reinstall_casks.py.
+    user : str
+        The target user for whom the sudoers rules are generated.
+    brew_prefix : str
+        The Homebrew prefix used to resolve relative commands and wildcard
+        Caskroom paths.
+
+    Returns
+    -------
+    Dict[Optional[str], List[str]]
+        A dictionary mapping cask tokens (or ``None`` for global rules)
+        to lists of sudoers rule strings derived from the log.
+    """
+    mapping: Dict[Optional[str], List[str]] = {}
+    seen: Dict[Optional[str], set] = {}
+    current_cask: Optional[str] = None
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
+            for raw in fh:
+                line = raw.strip()
+                # Detect start of a cask reinstall command
+                if line.startswith("Running command: brew") and "--cask" in line:
+                    parts = line.split()
+                    if parts:
+                        current_cask = parts[-1].strip()
+                    else:
+                        current_cask = None
+                    continue
+                # Only consider sudo lines
+                if "/usr/bin/sudo" not in raw:
+                    continue
+                # Skip descriptive and Ruby lines
+                if (
+                    "with `sudo`" in raw
+                    or "Uninstalling packages" in raw
+                    or "Changing ownership" in raw
+                    or "Running installer" in raw
+                    or "#<Cask" in raw
+                    or "Cask::" in raw
+                    or "@dsl_args" in raw
+                    or "@directives" in raw
+                    or "@cask=" in raw
+                ):
+                    continue
+                stripped = raw.strip()
+                if stripped.startswith("sudo:"):
+                    continue
+                try:
+                    tokens = shlex.split(raw, posix=True)
+                except Exception:
+                    continue
+                parsed = _find_log_command_tokens(tokens)
+                if not parsed:
+                    continue
+                cmd, args = parsed
+                rule = _normalize_log_command(cmd, args, user, brew_prefix)
+                if not rule:
+                    continue
+                for r in rule.split("\n"):
+                    # Wildcard version numbers
+                    r = _wildcard_versions_in_rule(r)
+                    if current_cask not in mapping:
+                        mapping[current_cask] = []
+                        seen[current_cask] = set()
+                    if r not in seen[current_cask]:
+                        mapping[current_cask].append(r)
+                        seen[current_cask].add(r)
+    except Exception:
+        return {}
+    return mapping
 
 
 def determine_dest_dir(uninst: Dict[str, List[Any]]) -> Optional[str]:
@@ -529,11 +667,11 @@ def _wildcard_team_id(segment: str) -> str:
     exactly a team ID, return '*' instead.  Handles segments starting
     with '*' by leaving the star intact (e.g. '*RR9LPM2N' -> '*').
     """
-    prefix = ''
-    while segment.startswith('*'):
-        prefix += '*'
+    prefix = ""
+    while segment.startswith("*"):
+        prefix += "*"
         segment = segment[1:]
-    return prefix + ('*' if TEAM_ID_RE.match(segment) else segment)
+    return prefix + ("*" if TEAM_ID_RE.match(segment) else segment)
 
 
 def _wildcard_delete_path(path: str) -> str:
@@ -549,8 +687,8 @@ def _wildcard_delete_path(path: str) -> str:
     Collapses multiple '*' in a segment to a single '*'.
     """
     parts = []
-    for seg in path.split('/'):
-        if not seg or seg in ('~', '..', '.'):
+    for seg in path.split("/"):
+        if not seg or seg in ("~", "..", "."):
             parts.append(seg)
             continue
         orig = seg
@@ -558,7 +696,7 @@ def _wildcard_delete_path(path: str) -> str:
         seg = _wildcard_team_id(seg)
         # If the segment is reduced to a single '*' (team ID), skip further
         # transformations to avoid reintroducing partial wildcards.
-        if seg == '*':
+        if seg == "*":
             parts.append(seg)
             continue
         # Only wildcard segments that consist entirely of digits and common version separators
@@ -566,40 +704,42 @@ def _wildcard_delete_path(path: str) -> str:
         # merely start with a digit but also contain letters (e.g. '115Browser.app').  This
         # avoids dangerous patterns like '/Applications/*.app' while still wildcarding
         # purely numeric or version‑like directory names (e.g. '13.6.3,24585314_0521' -> '*').
-        if re.fullmatch(r'[\d.,_-]+', seg):
-            seg = '*'
+        if re.fullmatch(r"[\d.,_-]+", seg):
+            seg = "*"
         # Replace segments like '13.6.3,24585314_0521' entirely (orig may include
         # characters stripped by team ID processing above).
-        if re.fullmatch(r'[\d.,_-]+', orig):
-            seg = '*'
+        if re.fullmatch(r"[\d.,_-]+", orig):
+            seg = "*"
         # Replace digits preceded by space/hyphen/underscore
-        seg = re.sub(r'(?:\s|-|_)(?:\d+)(?:[\d.,]*)', lambda m: m.group(0)[0] + '*', seg)
+        seg = re.sub(
+            r"(?:\s|-|_)(?:\d+)(?:[\d.,]*)", lambda m: m.group(0)[0] + "*", seg
+        )
         # Replace trailing digits after letters (e.g. 'macgpg2' -> 'macgpg*')
-        seg = re.sub(r'([A-Za-z])\d+(?:[\d.,]*)$', r'\1*', seg)
+        seg = re.sub(r"([A-Za-z])\d+(?:[\d.,]*)$", r"\1*", seg)
 
         # Replace digits preceding an uppercase letter within the segment.  This
         # helps generalise names like 'Folx3Plugin' -> 'Folx*Plugin'.  We look
         # for digits following a letter and immediately before an uppercase
         # letter, and replace the digit sequence with '*'.
-        seg = re.sub(r'([A-Za-z])\d+(?=[A-Z])', r'\1*', seg)
+        seg = re.sub(r"([A-Za-z])\d+(?=[A-Z])", r"\1*", seg)
 
         # If segment contains an extension (e.g. 'com.techsmith.camtasia25.sfl'),
         # wildcard digits immediately before the final dot.  This allows
         # version numbers embedded in filenames to be generalised.  We treat
         # only the last component before the extension to avoid affecting
         # domain prefixes.
-        if '.' in seg and not re.fullmatch(r'[\d.,]+', seg):
+        if "." in seg and not re.fullmatch(r"[\d.,]+", seg):
             # Split on the last dot into name and extension
-            base, dot, ext = seg.rpartition('.')
+            base, dot, ext = seg.rpartition(".")
             if base:
                 # If base ends with digits preceded by a letter, wildcard them
-                new_base = re.sub(r'([A-Za-z])\d+(?:[\d.,]*)$', r'\1*', base)
+                new_base = re.sub(r"([A-Za-z])\d+(?:[\d.,]*)$", r"\1*", base)
                 if new_base != base:
                     seg = new_base + dot + ext
         # Replace v‑prefixed versions
-        seg = re.sub(r'v\d+(?:[\d.]+)*', 'v*', seg)
+        seg = re.sub(r"v\d+(?:[\d.]+)*", "v*", seg)
         # Collapse multiple stars within the segment
-        seg = re.sub(r'\*+', '*', seg)
+        seg = re.sub(r"\*+", "*", seg)
         # Collapse team identifier segments containing stars.  Two cases:
         # (1) If the segment consists solely of uppercase letters/digits with
         #     embedded stars and no other punctuation (e.g. '7SFX*GNR7'),
@@ -611,24 +751,36 @@ def _wildcard_delete_path(path: str) -> str:
         #     yields a string of ≥6 uppercase letters/digits, collapse
         #     just that prefix to '*', preserving the dot and suffix
         #     (yielding '*.com.noodlesoft.HazelHelper.plist').
-        if '*' in seg:
+        if "*" in seg:
             # Case 2: collapse star‑separated prefix before first dot
-            if '.' in seg:
-                pre, dot, suf = seg.partition('.')
-                clean_pre = pre.replace('*', '')
-                if len(clean_pre) >= 6 and re.fullmatch(r'[A-Z0-9]+', clean_pre) and re.fullmatch(r'[A-Z0-9\*]+', pre):
-                    seg = '*' + dot + suf
+            if "." in seg:
+                pre, dot, suf = seg.partition(".")
+                clean_pre = pre.replace("*", "")
+                if (
+                    len(clean_pre) >= 6
+                    and re.fullmatch(r"[A-Z0-9]+", clean_pre)
+                    and re.fullmatch(r"[A-Z0-9\*]+", pre)
+                ):
+                    seg = "*" + dot + suf
                 else:
                     # Fall back to case 1 on entire segment
-                    clean = orig.replace('*', '')
-                    if len(clean) >= 6 and re.fullmatch(r'[A-Z0-9]+', clean) and re.fullmatch(r'[A-Z0-9\*]+', seg):
-                        seg = '*'
+                    clean = orig.replace("*", "")
+                    if (
+                        len(clean) >= 6
+                        and re.fullmatch(r"[A-Z0-9]+", clean)
+                        and re.fullmatch(r"[A-Z0-9\*]+", seg)
+                    ):
+                        seg = "*"
             else:
-                clean = orig.replace('*', '')
-                if len(clean) >= 6 and re.fullmatch(r'[A-Z0-9]+', clean) and re.fullmatch(r'[A-Z0-9\*]+', seg):
-                    seg = '*'
+                clean = orig.replace("*", "")
+                if (
+                    len(clean) >= 6
+                    and re.fullmatch(r"[A-Z0-9]+", clean)
+                    and re.fullmatch(r"[A-Z0-9\*]+", seg)
+                ):
+                    seg = "*"
         parts.append(seg)
-    return '/'.join(parts)
+    return "/".join(parts)
 
 
 def _wildcard_app_path(path: str) -> str:
@@ -639,19 +791,21 @@ def _wildcard_app_path(path: str) -> str:
     with '*'.  Also wildcard any team IDs or numeric directory names.
     """
     # Split path to apply wildcards to each segment
-    segments = path.split('/')
+    segments = path.split("/")
     new_segments = []
     for seg in segments:
-        if seg.endswith('.app'):
+        if seg.endswith(".app"):
             base = seg[:-4]
             # e.g. 'SMS Plus v1.3.7' -> 'SMS Plus v*'
-            base = re.sub(r'(?:\s|\-|_)(?:v?\d+(?:[\d.]+)*)$', lambda m: m.group(0)[0] + '*', base)
+            base = re.sub(
+                r"(?:\s|\-|_)(?:v?\d+(?:[\d.]+)*)$", lambda m: m.group(0)[0] + "*", base
+            )
             # e.g. 'Folx3' -> 'Folx*'
-            base = re.sub(r'(.*?)(\d+(?:[\d.]+)*)$', r'\1*', base)
-            seg = base + '.app'
+            base = re.sub(r"(.*?)(\d+(?:[\d.]+)*)$", r"\1*", base)
+            seg = base + ".app"
         seg = _wildcard_delete_path(seg)
         new_segments.append(seg)
-    return '/'.join(new_segments)
+    return "/".join(new_segments)
 
 
 def _wildcard_pkg_name(pkg: str) -> str:
@@ -663,13 +817,13 @@ def _wildcard_pkg_name(pkg: str) -> str:
     collapses multiple '*-'.
     """
     # Replace parenthesised numeric sequences, e.g. '(5558)', with '*'
-    name = re.sub(r'\(\d+\)', '*', pkg)
-    name = re.sub(r'([_-])\d[\d._,]*', r'\1*', name)
+    name = re.sub(r"\(\d+\)", "*", pkg)
+    name = re.sub(r"([_-])\d[\d._,]*", r"\1*", name)
     # Collapse repeated -* or _*
-    name = re.sub(r'(?:-_*\*)+', '-*', name)
-    name = re.sub(r'(?:__\*)+', '_*', name)
+    name = re.sub(r"(?:-_*\*)+", "-*", name)
+    name = re.sub(r"(?:__\*)+", "_*", name)
     # Collapse consecutive stars into a single star
-    name = re.sub(r'\*+', '*', name)
+    name = re.sub(r"\*+", "*", name)
     return name
 
 
@@ -682,14 +836,14 @@ def _wildcard_script_name(script: str) -> str:
     becomes 'Anaconda*-*-MacOSX-arm64.sh'.  Collapses repeated '-*'
     segments.
     """
-    s = re.sub(r'([_-])\d[\d._]*', r'\1*', script)
+    s = re.sub(r"([_-])\d[\d._]*", r"\1*", script)
     # Replace sequences of v + digits
-    s = re.sub(r'v\d[\d.]*', 'v*', s)
+    s = re.sub(r"v\d[\d.]*", "v*", s)
     # Collapse repeated -* or _*
-    s = re.sub(r'(?:-_*\*)+', '-*', s)
-    s = re.sub(r'(?:__\*)+', '_*', s)
+    s = re.sub(r"(?:-_*\*)+", "-*", s)
+    s = re.sub(r"(?:__\*)+", "_*", s)
     # Collapse consecutive stars to a single star
-    s = re.sub(r'\*+', '*', s)
+    s = re.sub(r"\*+", "*", s)
     return s
 
 
@@ -700,7 +854,8 @@ def _wildcard_pkgutil_id(pid: str) -> str:
     replace the digits with '*'.  e.g. 'org.tug.mactex.basictex2025'
     -> 'org.tug.mactex.basictex*'.
     """
-    return re.sub(r'\d+$', '*', pid)
+    return re.sub(r"\d+$", "*", pid)
+
 
 # -----------------------------------------------------------------------------
 # Helper function to wildcard version identifiers in complete sudoers rules.
@@ -712,6 +867,7 @@ def _wildcard_pkgutil_id(pid: str) -> str:
 # application is updated.  The `_wildcard_versions_in_rule` helper
 # performs conservative text substitutions on an entire rule to replace
 # version‑like tokens with wildcards.
+
 
 def _wildcard_versions_in_rule(rule: str) -> str:
     """Replace version identifiers in a sudoers rule with wildcards.
@@ -729,61 +885,61 @@ def _wildcard_versions_in_rule(rule: str) -> str:
     # Replace version directories in Caskroom paths (e.g.
     # /Caskroom/foo/1.2.3 -> /Caskroom/foo/*).  Only the immediate
     # subdirectory after <cask> is wildcarded.
-    rule = re.sub(r'(/Caskroom/[^/]+/)[^/]+', r'\1*', rule)
+    rule = re.sub(r"(/Caskroom/[^/]+/)[^/]+", r"\1*", rule)
     # Replace sequences of numbers separated by punctuation characters such
     # as ., -, _, , or parentheses with a single '*'.  We require at
     # least one separator to avoid matching simple integers.  Examples:
     # 1.2.3, 6.0.4-1234, 2_5_0, 3_7_1(5558) -> *.
-    rule = re.sub(r'\b\d+[\.\-_,()]\d+(?:[\.\-_,()]\d+)*\b', '*', rule)
+    rule = re.sub(r"\b\d+[\.\-_,()]\d+(?:[\.\-_,()]\d+)*\b", "*", rule)
     # Replace version numbers that appear after a dot without a preceding
     # letter (e.g. '.2025', '.0.20.1').  This helps wildcard API
     # identifiers or bundle names like 'LayOut.2025.LayOutThumbnailExtension'.
-    rule = re.sub(r'\.\d+(?:[\.\-_,]\d+)*', '.*', rule)
+    rule = re.sub(r"\.\d+(?:[\.\-_,]\d+)*", ".*", rule)
     # Replace standalone eight‑digit sequences (often dates) with '*'
-    rule = re.sub(r'\b\d{8}\b', '*', rule)
+    rule = re.sub(r"\b\d{8}\b", "*", rule)
     # Replace four‑digit sequences when preceded by a letter, dot, underscore
     # or hyphen.  This catches year‑like segments such as '.2025' or '_2024'.
-    rule = re.sub(r'(?<=[A-Za-z._-])\d{4}\b', '*', rule)
+    rule = re.sub(r"(?<=[A-Za-z._-])\d{4}\b", "*", rule)
     # Replace macOS SDK suffixes like 'macosx26' or 'macos10' with a wildcard.
-    rule = re.sub(r'macosx\d+', 'macosx*', rule)
-    rule = re.sub(r'macos\d+', 'macos*', rule)
+    rule = re.sub(r"macosx\d+", "macosx*", rule)
+    rule = re.sub(r"macos\d+", "macos*", rule)
     # Replace architecture targets like 'arm64' with 'arm*' to allow
     # future CPU variations (e.g. arm65).  Only collapse the numeric
     # portion after 'arm'.
-    rule = re.sub(r'arm\d+', 'arm*', rule)
+    rule = re.sub(r"arm\d+", "arm*", rule)
     # Replace occurrences of 'v' followed by digits (e.g. v2, v10) with 'v*'.
-    rule = re.sub(r'\bv\d+\b', 'v*', rule)
+    rule = re.sub(r"\bv\d+\b", "v*", rule)
     # Replace hyphen‑prefixed dotted version numbers like '-1.0' or '-3.4.5'
     # with '-*'.  This captures minor or patch versions embedded in
     # launchctl labels and other identifiers (e.g. 'com.adobe.AAM.Startup-1.0').
-    rule = re.sub(r'-(?:\d+\.)+\d+', '-*', rule)
+    rule = re.sub(r"-(?:\d+\.)+\d+", "-*", rule)
     # Replace single‑digit ordinals (e.g. '3rd', '1st', '2nd', '4th') with '*'.
-    rule = re.sub(r'\d+(?:st|nd|rd|th)', '*', rule)
+    rule = re.sub(r"\d+(?:st|nd|rd|th)", "*", rule)
     # Replace digits preceded by a letter and followed by a dot or hyphen.  This
     # handles cases like 'net9.Welly' -> 'net*.Welly' and 'foo3-bar' -> 'foo*-bar'.
-    rule = re.sub(r'(?<=[A-Za-z])\d+(?=[\.\-])', '*', rule)
+    rule = re.sub(r"(?<=[A-Za-z])\d+(?=[\.\-])", "*", rule)
     # Replace digits preceded by a letter and followed by another letter.  This
     # handles CamelCase or concatenated identifiers such as 'numi3helper' and
     # 'BlueHarvestHelper8' by wildcarding the numeric component.  It will
     # transform them to 'numi*helper' and 'BlueHarvestHelper*'.
-    rule = re.sub(r'([A-Za-z])\d+(?=[A-Za-z])', r'\1*', rule)
+    rule = re.sub(r"([A-Za-z])\d+(?=[A-Za-z])", r"\1*", rule)
     # Replace digits preceded by a letter at the end of a word (not followed
     # by another alphanumeric character).  This covers patterns like
     # 'BlueHarvestHelper8' -> 'BlueHarvestHelper*' and 'numi3' -> 'numi*'.
-    rule = re.sub(r'([A-Za-z])\d+(?=[^A-Za-z0-9]|$)', r'\1*', rule)
+    rule = re.sub(r"([A-Za-z])\d+(?=[^A-Za-z0-9]|$)", r"\1*", rule)
     # Replace long hexadecimal or alphanumeric tokens (8+ characters) that
     # resemble commit hashes or unique identifiers with '*'.
-    rule = re.sub(r'\b[0-9a-fA-F]{8,}\b', '*', rule)
+    rule = re.sub(r"\b[0-9a-fA-F]{8,}\b", "*", rule)
     # Replace hyphen‑prefixed alphanumeric fragments of 5 or more characters
     # that include at least one digit (e.g. '-5b3ous', '-cc24aef4') with
     # '-*'.  This helps wildcard variable suffixes in filenames like
     # 'choices20250918-92814-5b3ous.xml' without matching normal
     # hyphenated words such as '-teams'.
-    rule = re.sub(r'-(?=[0-9A-Za-z]*\d)[0-9A-Za-z]{5,}', '-*', rule)
+    rule = re.sub(r"-(?=[0-9A-Za-z]*\d)[0-9A-Za-z]{5,}", "-*", rule)
     # Collapse repeated '-*' patterns into a single '-*'
-    rule = re.sub(r'(?:-\*){2,}', '-*', rule)
+    rule = re.sub(r"(?:-\*){2,}", "-*", rule)
     # Collapse consecutive stars into a single star
-    rule = re.sub(r'\*+', '*', rule)
+    rule = re.sub(r"\*+", "*", rule)
     # Replace numeric sequences separated by dots or underscores that are
     # embedded within alphanumeric tokens.  For example, convert
     # 'iMazing3.4.0.23220Mac' -> 'iMazing*Mac' and
@@ -792,24 +948,24 @@ def _wildcard_versions_in_rule(rule: str) -> str:
     # (dot or underscore) plus additional digits, and require that it be
     # immediately preceded by a letter.  This avoids matching IP
     # addresses or plain numeric segments already handled above.
-    rule = re.sub(r'(?<=[A-Za-z])\d+(?:[._]\d+)+', '*', rule)
+    rule = re.sub(r"(?<=[A-Za-z])\d+(?:[._]\d+)+", "*", rule)
     # Replace parenthesised numeric or version sequences like '(5558)' or
     # '(1.2.3)' with a single '*'.  This helps generalise installer
     # package names that embed build numbers.
-    rule = re.sub(r'\(\d+(?:[\d._]*?)\)', '*', rule)
+    rule = re.sub(r"\(\d+(?:[\d._]*?)\)", "*", rule)
     # Collapse ARMDCHelper cc suffixes: if a label contains '.cc' followed
     # by a long sequence of hex digits (optionally interspersed with
     # previously inserted stars), replace the entire suffix after '.cc'
     # with a single '*'.  This handles log entries where the hash has
     # already been partially wildcarded (e.g. 'cc*aef*a*b*ed...').
-    rule = re.sub(r'(\.cc)(?:[0-9A-Fa-f\*]{8,})', r'\1*', rule)
+    rule = re.sub(r"(\.cc)(?:[0-9A-Fa-f\*]{8,})", r"\1*", rule)
     # Collapse multiple '-*' or '_*' patterns that may have been
     # introduced by the substitutions above.  Ensure we don't end up with
     # '-*-*' or similar.
-    rule = re.sub(r'(?:-\*){2,}', '-*', rule)
-    rule = re.sub(r'(?:_\*){2,}', '_*', rule)
+    rule = re.sub(r"(?:-\*){2,}", "-*", rule)
+    rule = re.sub(r"(?:_\*){2,}", "_*", rule)
     # Collapse remaining consecutive stars once more
-    rule = re.sub(r'\*+', '*', rule)
+    rule = re.sub(r"\*+", "*", rule)
     return rule
 
 
@@ -840,28 +996,28 @@ def _wildcard_launchctl_labels(label: str) -> List[str]:
     # 'com.adguard.mac.adguard.helper'), generate a variant that wildcards
     # the helper suffix.  This helps match both 'helper' and possible
     # future helper variants (e.g. 'helper2', 'helperService').
-    if '.helper' in label:
-        helper_base = label.split('.helper', 1)[0]
+    if ".helper" in label:
+        helper_base = label.split(".helper", 1)[0]
         if helper_base:
             variants.append(f"{helper_base}.*")
 
     wild = None
     # Hash‑like suffix
-    if re.search(r'\.[a-f0-9]{8,}$', label):
-        wild = re.sub(r'\.[a-f0-9]{8,}$', '.*', label)
+    if re.search(r"\.[a-f0-9]{8,}$", label):
+        wild = re.sub(r"\.[a-f0-9]{8,}$", ".*", label)
     # Hyphen or dot followed by version digits
-    elif re.search(r'[\.-]v?\d(?:[\d.]+)*$', label):
-        wild = re.sub(r'([\.-])v?\d(?:[\d.]+)*$', r'\1*', label)
+    elif re.search(r"[\.-]v?\d(?:[\d.]+)*$", label):
+        wild = re.sub(r"([\.-])v?\d(?:[\d.]+)*$", r"\1*", label)
     # Embedded digit at end of component
-    elif re.search(r'[A-Za-z]\d+$', label):
-        wild = re.sub(r'([A-Za-z])\d+$', r'\1*', label)
+    elif re.search(r"[A-Za-z]\d+$", label):
+        wild = re.sub(r"([A-Za-z])\d+$", r"\1*", label)
     if wild and wild != label:
         variants.append(wild)
     # Always include an application installer variant; if a wildcard label was
     # generated, use it as the base for the application variant.  Otherwise
     # use the original label.  This ensures version digits or hashes are
     # wildcarded in the application label as well (e.g. '...v2' -> '...*').
-    if label.startswith('com.'):
+    if label.startswith("com."):
         base_for_app = wild if wild else label
         variants.append(f"application.{base_for_app}.installer*")
     return variants
@@ -876,13 +1032,13 @@ def _wildcard_cask_path(path: str, token: str) -> str:
       /opt/homebrew/Caskroom/chatgpt/*/ChatGPT.app
     Also applies `_wildcard_delete_path` to the remaining segments.
     """
-    prefix = os.path.join(run(["brew", "--prefix"]) , 'Caskroom', token)
+    prefix = os.path.join(run(["brew", "--prefix"]), "Caskroom", token)
     if path.startswith(prefix):
-        suffix = path[len(prefix):].lstrip('/')
-        parts = suffix.split('/')
+        suffix = path[len(prefix) :].lstrip("/")
+        parts = suffix.split("/")
         if parts:
-            parts[0] = '*'
-        suffix_w = '/'.join(parts)
+            parts[0] = "*"
+        suffix_w = "/".join(parts)
         out = os.path.join(prefix, suffix_w)
     else:
         out = path
@@ -892,8 +1048,10 @@ def _wildcard_cask_path(path: str, token: str) -> str:
 ###############################################################################
 # Core rule generation
 
-def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
-                              brew_prefix: str, swift_util: str) -> List[str]:
+
+def generate_sudoers_for_cask(
+    token: str, cj: Dict[str, Any], user: str, brew_prefix: str, swift_util: str
+) -> List[str]:
     """Return a list of sudoers lines for a single cask.
 
     Applies wildcarding to paths, names and identifiers to ensure the
@@ -920,59 +1078,77 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
     # Processes listed under uninstall->quit directives (to be terminated via killall)
     uninst_quit: List[str] = []
     for obj in arts:
-        if 'app' in obj:
-            for entry in ensure_list(obj['app']):
+        if "app" in obj:
+            for entry in ensure_list(obj["app"]):
                 if isinstance(entry, str):
                     apps.append((entry, None))
                 elif isinstance(entry, dict):
-                    src = entry.get('path') or entry.get('source') or entry.get('app') or entry.get('target') or ''
-                    tgt = entry.get('target')
+                    src = (
+                        entry.get("path")
+                        or entry.get("source")
+                        or entry.get("app")
+                        or entry.get("target")
+                        or ""
+                    )
+                    tgt = entry.get("target")
                     if not src and tgt:
                         src = os.path.basename(tgt)
                     if src:
                         apps.append((src, tgt))
-        if 'pkg' in obj:
-            for entry in ensure_list(obj['pkg']):
+        if "pkg" in obj:
+            for entry in ensure_list(obj["pkg"]):
                 if isinstance(entry, str):
                     pkgs.append(entry)
-        if 'installer' in obj:
-            inst = obj['installer']
+        if "installer" in obj:
+            inst = obj["installer"]
             if isinstance(inst, dict):
-                if inst.get('script') and inst['script'].get('sudo'):
-                    installer_scripts.append({'exec': inst['script']['executable'], 'args': ensure_list(inst['script'].get('args'))})
-                if inst.get('manual'):
-                    installer_manuals.append(inst['manual'])
+                if inst.get("script") and inst["script"].get("sudo"):
+                    installer_scripts.append(
+                        {
+                            "exec": inst["script"]["executable"],
+                            "args": ensure_list(inst["script"].get("args")),
+                        }
+                    )
+                if inst.get("manual"):
+                    installer_manuals.append(inst["manual"])
             elif isinstance(inst, list):
                 for it in inst:
                     if not isinstance(it, dict):
                         continue
-                    if it.get('script') and it['script'].get('sudo'):
-                        installer_scripts.append({'exec': it['script']['executable'], 'args': ensure_list(it['script'].get('args'))})
-                    if it.get('manual'):
-                        installer_manuals.append(it['manual'])
-        if 'uninstall' in obj:
-            for entry in ensure_list(obj['uninstall']):
+                    if it.get("script") and it["script"].get("sudo"):
+                        installer_scripts.append(
+                            {
+                                "exec": it["script"]["executable"],
+                                "args": ensure_list(it["script"].get("args")),
+                            }
+                        )
+                    if it.get("manual"):
+                        installer_manuals.append(it["manual"])
+        if "uninstall" in obj:
+            for entry in ensure_list(obj["uninstall"]):
                 if not isinstance(entry, dict):
                     continue
-                uninst_pkgutil += ensure_list(entry.get('pkgutil'))
-                uninst_launch += ensure_list(entry.get('launchctl'))
-                uninst_delete += ensure_list(entry.get('delete'))
-                uninst_rmdir += ensure_list(entry.get('rmdir'))
-                uninst_trash += ensure_list(entry.get('trash'))
+                uninst_pkgutil += ensure_list(entry.get("pkgutil"))
+                uninst_launch += ensure_list(entry.get("launchctl"))
+                uninst_delete += ensure_list(entry.get("delete"))
+                uninst_rmdir += ensure_list(entry.get("rmdir"))
+                uninst_trash += ensure_list(entry.get("trash"))
                 # collect kernel extensions (kext) identifiers for unloading
-                uninst_kexts += ensure_list(entry.get('kext'))
+                uninst_kexts += ensure_list(entry.get("kext"))
                 # Collect uninstall scripts.  Handle both `script` and
                 # `early_script` keys.  Some casks specify an "early_script"
                 # (or uninstall_preflight) that should run with sudo.  Treat
                 # these similarly to regular uninstall scripts.
-                script_entry = entry.get('script')
-                early_script_entry = entry.get('early_script')
+                script_entry = entry.get("script")
+                early_script_entry = entry.get("early_script")
                 for scr in (script_entry, early_script_entry):
-                    if scr and isinstance(scr, dict) and scr.get('sudo'):
-                        uninst_scripts.append({
-                            'exec': scr.get('executable'),
-                            'args': ensure_list(scr.get('args'))
-                        })
+                    if scr and isinstance(scr, dict) and scr.get("sudo"):
+                        uninst_scripts.append(
+                            {
+                                "exec": scr.get("executable"),
+                                "args": ensure_list(scr.get("args")),
+                            }
+                        )
 
                 # Some uninstall definitions use "uninstall_preflight" or
                 # "uninstall_postflight" keys with procs (e.g. Adobe).  These
@@ -980,10 +1156,10 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
                 # invocations) but they are executed internally by brew and
                 # cannot be whitelisted generically.  We ignore them here.
 
-                if entry.get('set_ownership'):
-                    uninst_setown += ensure_list(entry['set_ownership'])
+                if entry.get("set_ownership"):
+                    uninst_setown += ensure_list(entry["set_ownership"])
                 # collect signal directives for pkill/killall operations
-                sigs = entry.get('signal')
+                sigs = entry.get("signal")
                 if sigs:
                     for sig in ensure_list(sigs):
                         # Expect [SIGNAL, PROCESS] pairs
@@ -992,25 +1168,25 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
                             uninst_signals.append((str(signame), str(process)))
 
                 # collect processes to quit gracefully via killall
-                qu = entry.get('quit')
+                qu = entry.get("quit")
                 if qu:
                     for proc in ensure_list(qu):
                         if isinstance(proc, str):
                             uninst_quit.append(proc)
-        if 'zap' in obj:
-            for entry in ensure_list(obj['zap']):
+        if "zap" in obj:
+            for entry in ensure_list(obj["zap"]):
                 if isinstance(entry, dict):
-                    uninst_delete += ensure_list(entry.get('delete'))
-                    uninst_rmdir += ensure_list(entry.get('rmdir'))
-                    uninst_trash += ensure_list(entry.get('trash'))
+                    uninst_delete += ensure_list(entry.get("delete"))
+                    uninst_rmdir += ensure_list(entry.get("rmdir"))
+                    uninst_trash += ensure_list(entry.get("trash"))
 
     # Determine destination override from uninstall entries
-    dest_override = determine_dest_dir({'delete': uninst_delete, 'trash': uninst_trash})
+    dest_override = determine_dest_dir({"delete": uninst_delete, "trash": uninst_trash})
     lines: List[str] = []
     # Generate rules for each app
     for src_rel, tgt_rel in apps:
         # Source glob and destination path
-        src_glob = os.path.join(brew_prefix, 'Caskroom', token, '*', src_rel)
+        src_glob = os.path.join(brew_prefix, "Caskroom", token, "*", src_rel)
         src_glob_w = _wildcard_cask_path(src_glob, token)
         # Further generalise the source app path itself (e.g. 'Alfred 5.app'
         # -> 'Alfred *.app') by wildcarding numeric suffixes in the final
@@ -1020,69 +1196,157 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
         # remain version‑specific in the source path.
         src_glob_w = _wildcard_app_path(src_glob_w)
         if tgt_rel:
-            dest_path = os.path.join('/Applications', tgt_rel)
+            dest_path = os.path.join("/Applications", tgt_rel)
         else:
-            dest_dir = dest_override or '/Applications'
+            dest_dir = dest_override or "/Applications"
             # If override points to an app bundle path, use that; else join src name
-            if dest_override and dest_override.lower().endswith('.app'):
+            if dest_override and dest_override.lower().endswith(".app"):
                 dest_path = dest_override
             else:
                 dest_path = os.path.join(dest_dir, src_rel)
         dest_path_w = _wildcard_app_path(dest_path)
         # 1. Remove app bundle and its contents
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rm', ['-R', '-f', '--', dest_path_w]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/bin/rm", ["-R", "-f", "--", dest_path_w])
+        )
         # Remove contents directory separately (brew may call this)
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rm', ['-R', '-f', '--', os.path.join(dest_path_w, 'Contents')]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(
+                "/bin/rm", ["-R", "-f", "--", os.path.join(dest_path_w, "Contents")]
+            )
+        )
         # 2. Remove sentinel file if present (both variants)
-        sentinel = os.path.join(dest_path_w, '.homebrew-write-test')
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/usr/bin/touch', [sentinel.replace(' ', '\\ ')]) )
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rm', [sentinel.replace(' ', '\\ ')]) )
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rm', ['-f', '--', sentinel.replace(' ', '\\ ')]) )
+        sentinel = os.path.join(dest_path_w, ".homebrew-write-test")
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/usr/bin/touch", [sentinel.replace(" ", "\\ ")])
+        )
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/bin/rm", [sentinel.replace(" ", "\\ ")])
+        )
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/bin/rm", ["-f", "--", sentinel.replace(" ", "\\ ")])
+        )
         # 3. Copy app and contents
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/cp', ['-pR', src_glob_w, dest_path_w]))
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/cp', ['-pR', os.path.join(src_glob_w, 'Contents'), dest_path_w]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/bin/cp", ["-pR", src_glob_w, dest_path_w])
+        )
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(
+                "/bin/cp", ["-pR", os.path.join(src_glob_w, "Contents"), dest_path_w]
+            )
+        )
         # 4. Copy extended attributes (system swift and CLT swift)
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/usr/bin/swift', ['-target', 'arm64-apple-macosx*', swift_util, src_glob_w, dest_path_w]))
-        clt_swift = os.path.join('/Library/Developer/CommandLineTools/usr/bin/swift')
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(clt_swift, ['-target', 'arm64-apple-macosx*', swift_util, src_glob_w, dest_path_w]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(
+                "/usr/bin/swift",
+                ["-target", "arm64-apple-macosx*", swift_util, src_glob_w, dest_path_w],
+            )
+        )
+        clt_swift = os.path.join("/Library/Developer/CommandLineTools/usr/bin/swift")
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(
+                clt_swift,
+                ["-target", "arm64-apple-macosx*", swift_util, src_glob_w, dest_path_w],
+            )
+        )
 
         # 5. Fix ownership of the installed application bundle.  Many
         #    installers call chown to set the owner and group on the
-        #    destination path.  We allow this without a password.
-        #    Use a wildcard for the user portion to match any username,
-        #    as cask uninstall scripts may specify different users.
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/usr/sbin/chown', ['-R', '--', '*:staff', dest_path_w]))
+        #    destination path.  We allow this without a password.  Do
+        #    not use a wildcard user; instead, authorise only the
+        #    target user (with the staff group) and the target user
+        #    alone on both the bundle root and its Contents
+        #    directory.  This avoids generating wildcard chown rules
+        #    like '*:staff' which could over‑authorise.
+        dest_contents_path = dest_path_w + "/Contents"
+        # Permit changing ownership to user:staff on the bundle root
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(
+                "/usr/sbin/chown", ["-R", "--", f"{user}:staff", dest_path_w]
+            )
+        )
+        # Permit changing ownership to user:staff on the Contents directory
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(
+                "/usr/sbin/chown", ["-R", "--", f"{user}:staff", dest_contents_path]
+            )
+        )
+        # Permit changing ownership to user alone on the bundle root
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/usr/sbin/chown", ["-R", "--", user, dest_path_w])
+        )
+        # Permit changing ownership to user alone on the Contents directory
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/usr/sbin/chown", ["-R", "--", user, dest_contents_path])
+        )
 
     # pkg installers
     for pkg in pkgs:
-        pkg_w = _wildcard_cask_path(os.path.join(brew_prefix, 'Caskroom', token, '*', _wildcard_pkg_name(pkg)), token)
+        pkg_w = _wildcard_cask_path(
+            os.path.join(brew_prefix, "Caskroom", token, "*", _wildcard_pkg_name(pkg)),
+            token,
+        )
         # Permit installer invocation with a wildcard target to accommodate
         # variations like '-target / -verboseR' or other flags.  We use
         # '*'' after '-target' rather than a literal '/' to allow optional
         # arguments following the target.  Do not append a trailing '*' to
         # avoid producing overly broad rules.
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/usr/sbin/installer', ['-pkg', pkg_w, '-target', '*']))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/usr/sbin/installer", ["-pkg", pkg_w, "-target", "*"])
+        )
 
     # installer scripts
     for sc in installer_scripts:
-        exe = sc['exec']
-        if not exe.startswith('/'):
-            exe = os.path.join(brew_prefix, 'Caskroom', token, '*', exe)
+        exe = sc["exec"]
+        if not exe.startswith("/"):
+            exe = os.path.join(brew_prefix, "Caskroom", token, "*", exe)
         exe_w = _wildcard_cask_path(_wildcard_script_name(exe), token)
-        args = sc.get('args', [])
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(exe_w, args, allow_trailing_star=True))
+        args = sc.get("args", [])
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(exe_w, args, allow_trailing_star=True)
+        )
 
     # manual installers (app within DMG)
     for man in installer_manuals:
         # assume manual is an app bundle; wildcard version path
-        exe_glob = os.path.join(brew_prefix, 'Caskroom', token, '*', man, 'Contents', 'MacOS', os.path.splitext(os.path.basename(man))[0] + '*')
+        exe_glob = os.path.join(
+            brew_prefix,
+            "Caskroom",
+            token,
+            "*",
+            man,
+            "Contents",
+            "MacOS",
+            os.path.splitext(os.path.basename(man))[0] + "*",
+        )
         exe_w = _wildcard_cask_path(exe_glob, token)
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(exe_w, [], allow_trailing_star=True))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(exe_w, [], allow_trailing_star=True)
+        )
 
     # pkgutil forget
     for pid in uninst_pkgutil:
         pid_w = _wildcard_pkgutil_id(str(pid))
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/usr/sbin/pkgutil', ['--forget', pid_w]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/usr/sbin/pkgutil", ["--forget", pid_w])
+        )
 
     # launchctl operations
     for lbl in uninst_launch:
@@ -1104,44 +1368,62 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
             if v not in base_labels:
                 base_labels.append(v)
         for label in base_labels:
-            for action in ('list', 'remove'):
-                lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/launchctl', [action, label]))
+            for action in ("list", "remove"):
+                lines.append(
+                    f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+                    + join_command("/bin/launchctl", [action, label])
+                )
             # Remove associated launchd plist files for each label
-            for base_dir in ('/Library/LaunchDaemons', '/Library/LaunchAgents'):
-                plist_path = os.path.join(base_dir, label + '.plist')
+            for base_dir in ("/Library/LaunchDaemons", "/Library/LaunchAgents"):
+                plist_path = os.path.join(base_dir, label + ".plist")
                 p_w = _wildcard_delete_path(plist_path)
-                lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rm', ['-f', '--', p_w]))
+                lines.append(
+                    f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+                    + join_command("/bin/rm", ["-f", "--", p_w])
+                )
         # If the original label contains '.helper', also add removal of its exact plist.
         # This is redundant if the helper wildcard variant is identical to the
         # original label, but harmless.
-        if '.helper' in lbl_str:
-            for base_dir in ('/Library/LaunchDaemons', '/Library/LaunchAgents'):
-                helper_plist = os.path.join(base_dir, lbl_str + '.plist')
+        if ".helper" in lbl_str:
+            for base_dir in ("/Library/LaunchDaemons", "/Library/LaunchAgents"):
+                helper_plist = os.path.join(base_dir, lbl_str + ".plist")
                 p_w = _wildcard_delete_path(helper_plist)
-                lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rm', ['-f', '--', p_w]))
+                lines.append(
+                    f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+                    + join_command("/bin/rm", ["-f", "--", p_w])
+                )
 
     # uninstall scripts (sudo)
     for sc in uninst_scripts:
-        exe = sc['exec']
-        if not exe.startswith('/'):
-            exe = os.path.join(brew_prefix, 'Caskroom', token, '*', exe)
+        exe = sc["exec"]
+        if not exe.startswith("/"):
+            exe = os.path.join(brew_prefix, "Caskroom", token, "*", exe)
         exe_w = _wildcard_cask_path(_wildcard_script_name(exe), token)
-        args = sc.get('args', [])
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(exe_w, args, allow_trailing_star=True))
+        args = sc.get("args", [])
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(exe_w, args, allow_trailing_star=True)
+        )
 
     # delete/trash paths
     # For each path slated for deletion or trash, generate both recursive
     # removal and single‑file removal rules.  Homebrew will sometimes
     # call `rm -rf` on directories and `rm -f` on individual files.
-    for p in (uninst_delete + uninst_trash):
+    for p in uninst_delete + uninst_trash:
         # Only process string paths
         if not isinstance(p, str):
             continue
         p_w = _wildcard_delete_path(str(p))
         # Recursive removal (-r -f)
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rm', ['-r', '-f', '--', p_w]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/bin/rm", ["-r", "-f", "--", p_w])
+        )
         # Non‑recursive removal (-f)
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rm', ['-f', '--', p_w]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/bin/rm", ["-f", "--", p_w])
+        )
 
     # rmdir paths
     # Expand brace patterns in rmdir paths (e.g. Adobe{/CEP{/extensions,},}) into
@@ -1159,16 +1441,16 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
           '/Library/Application Support/Adobe'
         """
         # Find the first '{'
-        l = path.find('{')
+        l = path.find("{")
         if l == -1:
             return [path]
         # Find matching '}' for the first '{'
         depth = 0
         r = None
         for idx, ch in enumerate(path[l:], start=l):
-            if ch == '{':
+            if ch == "{":
                 depth += 1
-            elif ch == '}':
+            elif ch == "}":
                 depth -= 1
                 if depth == 0:
                     r = idx
@@ -1177,18 +1459,18 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
         if r is None:
             return [path]
         before = path[:l]
-        inside = path[l+1:r]
-        after = path[r+1:]
+        inside = path[l + 1 : r]
+        after = path[r + 1 :]
         # Split the inside on top‑level commas
         options: List[str] = []
         depth2 = 0
         start = 0
         for i, ch in enumerate(inside):
-            if ch == '{':
+            if ch == "{":
                 depth2 += 1
-            elif ch == '}':
+            elif ch == "}":
                 depth2 -= 1
-            elif ch == ',' and depth2 == 0:
+            elif ch == "," and depth2 == 0:
                 options.append(inside[start:i])
                 start = i + 1
         options.append(inside[start:])
@@ -1206,7 +1488,10 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
             continue
         for exp in expand_braces(str(p)):
             p_w = _wildcard_delete_path(exp)
-            lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rmdir', ['--', p_w]))
+            lines.append(
+                f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+                + join_command("/bin/rmdir", ["--", p_w])
+            )
 
     # set ownership
     for p in uninst_setown:
@@ -1214,8 +1499,20 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
         if not isinstance(p, str):
             continue
         p_w = _wildcard_delete_path(str(p))
-        # Use wildcard for user portion to match any username
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/usr/sbin/chown', ['-R', '--', '*:staff', p_w]))
+        # Permit ownership changes on set_ownership paths.  Do not use
+        # a wildcard user; instead authorise the target user with
+        # the staff group, and the target user alone.  This avoids
+        # broad '*:staff' rules.
+        # Change ownership to user:staff
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/usr/sbin/chown", ["-R", "--", f"{user}:staff", p_w])
+        )
+        # Change ownership to user alone
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command("/usr/sbin/chown", ["-R", "--", user, p_w])
+        )
 
     # kernel extension operations
     # For any kext identifiers specified in uninstall directives, permit
@@ -1226,22 +1523,35 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
     # /usr/sbin; older systems may have them in /sbin.  We pick the
     # first existing path.
     def choose_kext_path(cmd: str) -> str:
-        for base in ('/usr/sbin', '/sbin'):
+        for base in ("/usr/sbin", "/sbin"):
             p = os.path.join(base, cmd)
             if os.path.exists(p):
                 return p
         # fallback to /usr/sbin
-        return os.path.join('/usr/sbin', cmd)
+        return os.path.join("/usr/sbin", cmd)
+
     for kext in uninst_kexts:
         k = str(kext)
         # list loaded kernel extension
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(choose_kext_path('kextstat'), ['-l', '-b', k]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(choose_kext_path("kextstat"), ["-l", "-b", k])
+        )
         # unload the kernel extension
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(choose_kext_path('kextunload'), ['-b', k]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(choose_kext_path("kextunload"), ["-b", k])
+        )
         # allow loading as well (some installers load kexts)
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(choose_kext_path('kextload'), ['-b', k]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(choose_kext_path("kextload"), ["-b", k])
+        )
         # permit searching for kexts
-        lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(choose_kext_path('kextfind'), ['-b', k]))
+        lines.append(
+            f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+            + join_command(choose_kext_path("kextfind"), ["-b", k])
+        )
 
     # signal operations (pkill/killall) for uninstall 'signal' directives
     # For each specified signal and process name, permit sending the signal
@@ -1257,19 +1567,27 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
             proc_variants = variants
         else:
             proc_variants = [proc]
+
         # Function to select pkill/killall path
         def choose_userbin(cmd: str) -> str:
-            for base in ('/usr/bin', '/bin'):
+            for base in ("/usr/bin", "/bin"):
                 p = os.path.join(base, cmd)
                 if os.path.exists(p):
                     return p
-            return os.path.join('/usr/bin', cmd)
+            return os.path.join("/usr/bin", cmd)
+
         # For each process variant, allow pkill and killall from chosen path
         for p in proc_variants:
-            pkill_path = choose_userbin('pkill')
-            killall_path = choose_userbin('killall')
-            lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(pkill_path, [f"-{signame}", '-x', p]))
-            lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(killall_path, [f"-{signame}", p]))
+            pkill_path = choose_userbin("pkill")
+            killall_path = choose_userbin("killall")
+            lines.append(
+                f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+                + join_command(pkill_path, [f"-{signame}", "-x", p])
+            )
+            lines.append(
+                f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+                + join_command(killall_path, [f"-{signame}", p])
+            )
 
     # quit operations (killall without signal) for uninstall 'quit' directives
     # For each process listed in the cask's uninstall->quit, allow killall without a signal.
@@ -1282,22 +1600,29 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
             proc_variants = variants
         else:
             proc_variants = [proc]
+
         # Choose killall path once
         def choose_userbin(cmd: str) -> str:
-            for base in ('/usr/bin', '/bin'):
+            for base in ("/usr/bin", "/bin"):
                 p = os.path.join(base, cmd)
                 if os.path.exists(p):
                     return p
-            return os.path.join('/usr/bin', cmd)
-        killall_path = choose_userbin('killall')
+            return os.path.join("/usr/bin", cmd)
+
+        killall_path = choose_userbin("killall")
         for p in proc_variants:
             # Permit killall without a signal
-            lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(killall_path, [p]))
+            lines.append(
+                f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(killall_path, [p])
+            )
             # Also allow removal of any associated launchd plist files for processes listed under quit.
-            for base_dir in ('/Library/LaunchDaemons', '/Library/LaunchAgents'):
-                plist_path = os.path.join(base_dir, p + '.plist')
+            for base_dir in ("/Library/LaunchDaemons", "/Library/LaunchAgents"):
+                plist_path = os.path.join(base_dir, p + ".plist")
                 p_w = _wildcard_delete_path(plist_path)
-                lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command('/bin/rm', ['-f', '--', p_w]))
+                lines.append(
+                    f"{user} ALL=(ALL) NOPASSWD: SETENV: "
+                    + join_command("/bin/rm", ["-f", "--", p_w])
+                )
 
     # ------------------------------------------------------------------
     # Additional cleanup operations used by Homebrew during pkg uninstall
@@ -1311,19 +1636,31 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
     try:
         # Determine xargs binary path once (prefer /usr/bin, fallback to /bin)
         def choose_xargs() -> str:
-            for base in ('/usr/bin', '/bin'):
-                p = os.path.join(base, 'xargs')
+            for base in ("/usr/bin", "/bin"):
+                p = os.path.join(base, "xargs")
                 if os.path.exists(p):
                     return p
-            return '/usr/bin/xargs'
+            return "/usr/bin/xargs"
+
         xargs_bin = choose_xargs()
         xargs_variants: List[Tuple[str, List[str]]] = [
-            (xargs_bin, ['-0', '--', '/bin/rm', '--']),
-            (xargs_bin, ['-0', '--', '/bin/rm', '-r', '-f', '--']),
-            (xargs_bin, ['-0', '--', os.path.join(brew_prefix, 'Library', 'Homebrew', 'cask', 'utils', 'rmdir.sh')]),
+            (xargs_bin, ["-0", "--", "/bin/rm", "--"]),
+            (xargs_bin, ["-0", "--", "/bin/rm", "-r", "-f", "--"]),
+            (
+                xargs_bin,
+                [
+                    "-0",
+                    "--",
+                    os.path.join(
+                        brew_prefix, "Library", "Homebrew", "cask", "utils", "rmdir.sh"
+                    ),
+                ],
+            ),
         ]
         for exe, args in xargs_variants:
-            lines.append(f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(exe, args))
+            lines.append(
+                f"{user} ALL=(ALL) NOPASSWD: SETENV: " + join_command(exe, args)
+            )
     except Exception:
         # If brew_prefix is unavailable or os.path fails, skip adding xargs rules
         pass
@@ -1348,30 +1685,38 @@ def generate_sudoers_for_cask(token: str, cj: Dict[str, Any], user: str,
 
 
 def main() -> None:
-    target_user = os.environ.get('TARGET_USER') or os.environ.get('SUDO_USER') or run(['id', '-un'])
-    sudoers_out = os.environ.get('SUDOERS_OUT') or './homebrew-cask.nopasswd.sudoers'
+    target_user = (
+        os.environ.get("TARGET_USER")
+        or os.environ.get("SUDO_USER")
+        or run(["id", "-un"])
+    )
+    sudoers_out = os.environ.get("SUDOERS_OUT") or "./homebrew-cask.nopasswd.sudoers"
     # Determine brew prefix and swift util path
     try:
-        brew_prefix = run(['brew', '--prefix'])
-        repo = run(['brew', '--repository'])
-        swift_util = os.path.join(repo, 'Library', 'Homebrew', 'cask', 'utils', 'copy-xattrs.swift')
+        brew_prefix = run(["brew", "--prefix"])
+        repo = run(["brew", "--repository"])
+        swift_util = os.path.join(
+            repo, "Library", "Homebrew", "cask", "utils", "copy-xattrs.swift"
+        )
     except Exception:
-        brew_prefix = '/opt/homebrew'
-        swift_util = os.path.join(brew_prefix, 'Library', 'Homebrew', 'cask', 'utils', 'copy-xattrs.swift')
+        brew_prefix = "/opt/homebrew"
+        swift_util = os.path.join(
+            brew_prefix, "Library", "Homebrew", "cask", "utils", "copy-xattrs.swift"
+        )
     # Determine casks to process
-    casks_env = os.environ.get('CASKS')
+    casks_env = os.environ.get("CASKS")
     if casks_env:
         tokens = [c for c in casks_env.split() if c]
     else:
         try:
-            out = run(['brew', 'list', '--cask'])
+            out = run(["brew", "list", "--cask"])
             tokens = [c for c in out.splitlines() if c]
         except Exception:
             tokens = []
     # Determine number of threads to use (default 32).  If THREADS is unset or invalid,
     # fallback to 32.  Ensure at least one thread.
     try:
-        threads = int((os.environ.get('THREADS') or '').strip())
+        threads = int((os.environ.get("THREADS") or "").strip())
     except Exception:
         threads = 32
     if threads < 1:
@@ -1382,7 +1727,7 @@ def main() -> None:
         cj = fetch_cask_json(tok)
         if not cj:
             return tok, [f"# {tok}: failed to fetch metadata", ""]
-        name_list = cj.get('name') or [tok]
+        name_list = cj.get("name") or [tok]
         display = name_list[0]
         header = f"# ----------------------------\n# {display} ({tok})\n# ----------------------------"
         rules = generate_sudoers_for_cask(tok, cj, target_user, brew_prefix, swift_util)
@@ -1394,6 +1739,7 @@ def main() -> None:
     results: List[Tuple[str, List[str]]] = []
     if threads > 1 and len(tokens) > 1:
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
         with ThreadPoolExecutor(max_workers=threads) as pool:
             futures = {pool.submit(_process_cask, tok): tok for tok in tokens}
             for fut in as_completed(futures):
@@ -1408,64 +1754,90 @@ def main() -> None:
     token_to_lines = {tok: lines for tok, lines in results}
 
     # Gather additional rules from logs (LOGS env or default .log file)
-    extra_rules: List[str] = []
     used_logs: List[str] = []
-    log_env = os.environ.get('LOGS')
+    log_env = os.environ.get("LOGS")
     log_paths: List[str] = []
     if log_env:
-        # One or multiple paths separated by ':'
-        for lp in log_env.split(':'):
+        for lp in log_env.split(":"):
             lp = lp.strip()
             if lp:
                 log_paths.append(lp)
     else:
-        # Try a default log next to sudoers_out: same basename but .log
-        if sudoers_out.endswith('.sudoers'):
-            base = sudoers_out[:-len('.sudoers')]
+        if sudoers_out.endswith(".sudoers"):
+            base = sudoers_out[: -len(".sudoers")]
         else:
             base = sudoers_out
-        default_log = base + '.log'
+        default_log = base + ".log"
         if os.path.exists(default_log):
             log_paths.append(default_log)
-    # Process log files
+    # Parse logs into cask‑scoped extra rules
+    extra_rules_by_cask: Dict[Optional[str], List[str]] = {}
     for log_path in log_paths:
-        if os.path.exists(log_path):
-            extra_rules.extend(process_log_file(log_path, target_user, brew_prefix))
-            used_logs.append(log_path)
-    # Warn if no logs were found
+        if not os.path.exists(log_path):
+            continue
+        mapping = process_log_file_by_cask(log_path, target_user, brew_prefix)
+        used_logs.append(log_path)
+        for cask_token, rules in mapping.items():
+            if cask_token not in extra_rules_by_cask:
+                extra_rules_by_cask[cask_token] = []
+            existing = set(extra_rules_by_cask[cask_token])
+            for r in rules:
+                if r not in existing:
+                    extra_rules_by_cask[cask_token].append(r)
+                    existing.add(r)
     if not log_paths:
-        # Print a suggestion to specify LOGS or generate a log via reinstall_casks
-        sys.stderr.write("[WARN] No log file specified or found. It is strongly recommended to specify a log via LOGS=path or place a .log file next to the sudoers output so that additional sudo commands can be captured. You can generate a log using reinstall_casks.py to reinstall your casks.\n")
+        sys.stderr.write(
+            "[WARN] No log file specified or found. It is strongly recommended to specify a log via LOGS=path or place a .log file next to the sudoers output so that additional sudo commands can be captured. You can generate a log using reinstall_casks.py to reinstall your casks.\n"
+        )
     elif log_paths and not used_logs:
-        sys.stderr.write(f"[WARN] Log file(s) specified but not found: {', '.join(log_paths)}\n")
-    # Remove duplicates from extra_rules
-    seen_extra = set()
-    dedup_extra: List[str] = []
-    for r in extra_rules:
-        if r not in seen_extra:
-            seen_extra.add(r)
-            dedup_extra.append(r)
+        sys.stderr.write(
+            f"[WARN] Log file(s) specified but not found: {', '.join(log_paths)}\n"
+        )
 
     # Write the sudoers file
-    with open(sudoers_out, 'w', encoding='utf-8') as fh:
-        fh.write("# ===== Homebrew Cask NOPASSWD rules (generated by gen_brew_cask_sudoers.py) =====\n")
-        fh.write(f"# Generated: {run(['date','+%Y-%m-%d %H:%M:%S'])}\n")
+    with open(sudoers_out, "w", encoding="utf-8") as fh:
+        fh.write(
+            "# ===== Homebrew Cask NOPASSWD rules (generated by gen_brew_cask_sudoers.py) =====\n"
+        )
+        fh.write(f"# Generated: {run(['date', '+%Y-%m-%d %H:%M:%S'])}\n")
         fh.write(f"# Target user: {target_user}\n\n")
+        # Write rules for each requested cask, inserting any associated log rules
         for tok in tokens:
             lines = token_to_lines.get(tok)
             if not lines:
                 fh.write(f"# {tok}: failed to fetch metadata\n\n")
                 continue
+            # Write base lines
             for ln in lines:
                 fh.write(ln + "\n")
-        # Append extra rules from logs
-        if dedup_extra:
-            fh.write("\n# ----- Additional sudo commands from log -----\n")
-            for ln in dedup_extra:
-                fh.write(ln + "\n")
+            # Append any extra log rules for this cask
+            extra = extra_rules_by_cask.get(tok)
+            if extra:
+                existing = set(l for l in lines if l and not l.startswith("#"))
+                for r in extra:
+                    if r not in existing:
+                        fh.write(r + "\n")
+                fh.write("\n")
+        # Handle casks that only appear in logs but were not processed above
+        for tok_key, rules in extra_rules_by_cask.items():
+            if tok_key is None:
+                continue
+            if tok_key in token_to_lines:
+                continue
+            header = f"# ----------------------------\n# {tok_key} ({tok_key})\n# ----------------------------"
+            fh.write(header + "\n")
+            for r in rules:
+                fh.write(r + "\n")
+            fh.write("\n")
+        # Write any global log rules
+        global_extra = extra_rules_by_cask.get(None)
+        if global_extra:
+            fh.write("# ----- Additional sudo commands from log -----\n")
+            for r in global_extra:
+                fh.write(r + "\n")
 
     print(f"✅ Generated sudoers snippet: {sudoers_out}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

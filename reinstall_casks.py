@@ -164,7 +164,7 @@ def reinstall_cask(cask: str, log_file) -> None:
             also be written to this file.
     """
     # Construct the command
-    cmd = ["brew", "reinstall", "--cask", "--verbose", "--debug", cask]
+    cmd = ["brew", "reinstall", "--cask", "--verbose", "--debug", "--force", cask]
     # Write the command itself to both destinations
     header = f"\nRunning command: {' '.join(cmd)}\n"
     print(header, end="")

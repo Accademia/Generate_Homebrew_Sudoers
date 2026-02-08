@@ -39,9 +39,9 @@
 
 <br>
 
-#  [reinstall_casks.py](https://cdn.jsdelivr.net/gh/Accademia/Generate_Sudoers_For_Homebrew/reinstall_casks.py)  
+##  程序命令 ： [reinstall_casks.py](https://cdn.jsdelivr.net/gh/Accademia/Generate_Sudoers_For_Homebrew/reinstall_casks.py)  
 
-> ### https://cdn.jsdelivr.net/gh/Accademia/Generate_Sudoers_For_Homebrew/reinstall_casks.py
+> ### 下载链接 ： https://cdn.jsdelivr.net/gh/Accademia/Generate_Sudoers_For_Homebrew/reinstall_casks.py
 
 
 
